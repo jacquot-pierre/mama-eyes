@@ -27,7 +27,7 @@ def find_retina_circle(image):
     (x, y), radius = cv2.minEnclosingCircle(largest_contour)
 
     # Réduire légèrement le rayon pour être plus conservateur
-    radius = radius * 0.90
+    radius = radius * 0.95
     
     return (int(x), int(y)), int(radius)
 
@@ -72,54 +72,56 @@ def reinhard_color_transfer(source_image, reference_image, source_mask, referenc
 
     return bgr_normalized
 
-def align_images(input_dir, output_dir):
+def align_images(input_dir, output_dir, reference_image_path=None):
     """
-    Aligne toutes les images d'un dossier de référence sur la première image (chronologiquement)
-    et sauvegarde les résultats dans un dossier de sortie.
+    Aligne toutes les images d'un dossier de référence sur une image de référence (spécifiée ou la première).
     """
     # S'assurer que le dossier de sortie existe
     os.makedirs(output_dir, exist_ok=True)
 
-    # Obtenir la liste des images et les trier par nom (donc par date)
+    # Obtenir la liste des images
     try:
-        image_files = sorted([f for f in os.listdir(input_dir) if f.lower().endswith(('.png', '.jpg', '.jpeg'))])
-        if not image_files:
+        all_image_files = sorted([f for f in os.listdir(input_dir) if f.lower().endswith(('.png', '.jpg', '.jpeg'))])
+        if not all_image_files:
             print(f"Aucune image trouvée dans le dossier : {input_dir}")
             return
     except FileNotFoundError:
         print(f"Le dossier d'entrée n'existe pas : {input_dir}")
         return
 
-    # Le premier fichier est notre image de référence
-    reference_filename = image_files[0]
-    reference_path = os.path.join(input_dir, reference_filename)
-    print(f"Image de référence : {reference_filename}")
+    # Déterminer l'image de référence
+    if reference_image_path:
+        if not os.path.isfile(reference_image_path):
+            print(f"L'image de référence spécifiée n'existe pas : {reference_image_path}")
+            return
+        reference_filename = os.path.basename(reference_image_path)
+    else:
+        reference_filename = all_image_files[0]
+        reference_image_path = os.path.join(input_dir, reference_filename)
 
-    im_ref = cv2.imread(reference_path)
+    print(f"Image de référence : {reference_filename}")
+    im_ref = cv2.imread(reference_image_path)
     if im_ref is None:
-        print(f"Erreur lors de la lecture de l'image de référence : {reference_path}")
+        print(f"Erreur lors de la lecture de l'image de référence : {reference_image_path}")
         return
     
     height, width, _ = im_ref.shape
 
-    # Trouver le cercle de la rétine dans l'image de référence et créer son masque
+    # Traitement de l'image de référence
     ref_center, ref_radius = find_retina_circle(im_ref)
     if ref_center is None:
         print("Impossible de trouver le cercle de la rétine dans l'image de référence.")
         return
     ref_mask = np.zeros(im_ref.shape[:2], dtype="uint8")
     cv2.circle(ref_mask, ref_center, ref_radius, 255, -1)
-
-    # Le masque standard final sera celui de l'image de référence
     standard_mask = ref_mask
 
-    # Appliquer le masque à l'image de référence pour la sauvegarde
     im_ref_standardized = cv2.bitwise_and(im_ref, im_ref, mask=standard_mask)
     output_ref_path = os.path.join(output_dir, f"aligned_{reference_filename}")
     cv2.imwrite(output_ref_path, im_ref_standardized)
     print(f"Image de référence sauvegardée dans : {output_ref_path}")
 
-    # Traitement pour la détection de caractéristiques sur l'image de référence originale
+    # Préparation pour la détection de caractéristiques
     im_ref_gray = cv2.cvtColor(im_ref, cv2.COLOR_BGR2GRAY)
     clahe = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8, 8))
     im_ref_gray = clahe.apply(im_ref_gray)
@@ -130,17 +132,15 @@ def align_images(input_dir, output_dir):
         print("Aucun descripteur trouvé dans l'image de référence. Impossible de continuer.")
         return
 
-    # Boucler sur les autres images pour les aligner
-    for filename in image_files[1:]:
+    # Boucler sur les autres images
+    other_image_files = [f for f in all_image_files if f != reference_filename]
+    for filename in other_image_files:
         current_path = os.path.join(input_dir, filename)
         print(f"\nTraitement de l'image : {filename}...")
 
         im_to_align = cv2.imread(current_path)
-        if im_to_align is None:
-            print(f"  -> Erreur de lecture, image ignorée.")
-            continue
+        if im_to_align is None: continue
         
-        # Trouver le cercle de la rétine pour l'image courante
         src_center, src_radius = find_retina_circle(im_to_align)
         if src_center is None:
             print("  -> Impossible de trouver le cercle de la rétine, image ignorée.")
@@ -148,19 +148,14 @@ def align_images(input_dir, output_dir):
         src_mask = np.zeros(im_to_align.shape[:2], dtype="uint8")
         cv2.circle(src_mask, src_center, src_radius, 255, -1)
 
-        # Harmoniser la couleur en utilisant les masques
         im_to_align = reinhard_color_transfer(im_to_align, im_ref, src_mask, ref_mask)
             
-        # Détection de caractéristiques sur l'image normalisée en couleur
         im_to_align_gray = cv2.cvtColor(im_to_align, cv2.COLOR_BGR2GRAY)
         im_to_align_gray = clahe.apply(im_to_align_gray)
         kp2, des2 = sift.detectAndCompute(im_to_align_gray, None)
 
-        if des2 is None:
-            print("  -> Aucun descripteur trouvé dans l'image courante, image ignorée.")
-            continue
+        if des2 is None: continue
 
-        # Mise en correspondance
         bf = cv2.BFMatcher(cv2.NORM_L2, crossCheck=False)
         matches = bf.knnMatch(des1, des2, k=2)
         good_matches = []
@@ -168,9 +163,7 @@ def align_images(input_dir, output_dir):
             for m, n in matches:
                 if m.distance < 0.75 * n.distance:
                     good_matches.append(m)
-        except ValueError:
-            print("  -> Erreur lors du matching, image ignorée.")
-            continue
+        except ValueError: continue
 
         print(f"  -> {len(good_matches)} correspondances trouvées.")
 
@@ -178,7 +171,6 @@ def align_images(input_dir, output_dir):
         if len(good_matches) > MIN_MATCH_COUNT:
             src_pts = np.float32([kp1[m.queryIdx].pt for m in good_matches]).reshape(-1, 1, 2)
             dst_pts = np.float32([kp2[m.trainIdx].pt for m in good_matches]).reshape(-1, 1, 2)
-
             M, _ = cv2.findHomography(dst_pts, src_pts, cv2.RANSAC, 5.0)
             
             if M is not None:
@@ -196,7 +188,8 @@ if __name__ == '__main__':
     parser = argparse.ArgumentParser(description="Script pour aligner des images de rétine.")
     parser.add_argument('--input_dir', type=str, required=True, help="Dossier contenant les images à aligner.")
     parser.add_argument('--output_dir', type=str, required=True, help="Dossier où sauvegarder les images alignées.")
+    parser.add_argument('--reference_image', type=str, default=None, help="Chemin vers l'image de référence pour l'alignement et la couleur.")
     
     args = parser.parse_args()
     
-    align_images(args.input_dir, args.output_dir)
+    align_images(args.input_dir, args.output_dir, args.reference_image)
