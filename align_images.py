@@ -1,13 +1,40 @@
-
 import cv2
 import numpy as np
 import os
 import argparse
 
-def reinhard_color_transfer(source_image, reference_image):
+def find_retina_circle(image):
+    """
+    Trouve le cercle principal de la rétine dans une image avec une méthode plus robuste.
+    Retourne le centre (x, y) et le rayon du cercle.
+    """
+    image_blur = cv2.GaussianBlur(image, (0,0), 3)
+    image_gray = cv2.cvtColor(image_blur, cv2.COLOR_BGR2GRAY)
+    
+    # Utiliser une méthode de seuillage plus robuste
+    _, thresh = cv2.threshold(image_gray, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
+    
+    # Trouver les contours
+    contours, _ = cv2.findContours(thresh, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+    
+    if not contours:
+        return None, None
+
+    # Trouver le plus grand contour
+    largest_contour = max(contours, key=cv2.contourArea)
+    
+    # Trouver le cercle englobant minimum
+    (x, y), radius = cv2.minEnclosingCircle(largest_contour)
+
+    # Réduire légèrement le rayon pour être plus conservateur
+    radius = radius * 0.98
+    
+    return (int(x), int(y)), int(radius)
+
+def reinhard_color_transfer(source_image, reference_image, source_mask, reference_mask):
     """
     Normalise la couleur de l'image source en se basant sur la méthode de Reinhard et al.
-    pour transférer la couleur de l'image de référence.
+    en utilisant des masques pour ne considérer que la rétine.
     """
     # Convertir les images de BGR vers LAB
     source_lab = cv2.cvtColor(source_image, cv2.COLOR_BGR2LAB)
@@ -17,15 +44,15 @@ def reinhard_color_transfer(source_image, reference_image):
     source_l, source_a, source_b = cv2.split(source_lab)
     ref_l, ref_a, ref_b = cv2.split(ref_lab)
 
-    # Calculer la moyenne et l'écart-type pour chaque canal de l'image source
-    source_l_mean, source_l_std = cv2.meanStdDev(source_l)
-    source_a_mean, source_a_std = cv2.meanStdDev(source_a)
-    source_b_mean, source_b_std = cv2.meanStdDev(source_b)
+    # Calculer la moyenne et l'écart-type pour chaque canal de l'image source, en utilisant le masque
+    source_l_mean, source_l_std = cv2.meanStdDev(source_l, mask=source_mask)
+    source_a_mean, source_a_std = cv2.meanStdDev(source_a, mask=source_mask)
+    source_b_mean, source_b_std = cv2.meanStdDev(source_b, mask=source_mask)
 
-    # Calculer la moyenne et l'écart-type pour chaque canal de l'image de référence
-    ref_l_mean, ref_l_std = cv2.meanStdDev(ref_l)
-    ref_a_mean, ref_a_std = cv2.meanStdDev(ref_a)
-    ref_b_mean, ref_b_std = cv2.meanStdDev(ref_b)
+    # Calculer la moyenne et l'écart-type pour chaque canal de l'image de référence, en utilisant le masque
+    ref_l_mean, ref_l_std = cv2.meanStdDev(ref_l, mask=reference_mask)
+    ref_a_mean, ref_a_std = cv2.meanStdDev(ref_a, mask=reference_mask)
+    ref_b_mean, ref_b_std = cv2.meanStdDev(ref_b, mask=reference_mask)
 
     # Normaliser chaque canal de l'image source
     l_normalized = (source_l - source_l_mean) * (ref_l_std / source_l_std) + ref_l_mean
@@ -73,19 +100,29 @@ def align_images(input_dir, output_dir):
         print(f"Erreur lors de la lecture de l'image de référence : {reference_path}")
         return
     
-    im_ref_gray = cv2.cvtColor(im_ref, cv2.COLOR_BGR2GRAY)
-    height, width = im_ref_gray.shape
+    height, width, _ = im_ref.shape
 
-    # Sauvegarder l'image de référence telle quelle dans le dossier de sortie
+    # Trouver le cercle de la rétine dans l'image de référence et créer son masque
+    ref_center, ref_radius = find_retina_circle(im_ref)
+    if ref_center is None:
+        print("Impossible de trouver le cercle de la rétine dans l'image de référence.")
+        return
+    ref_mask = np.zeros(im_ref.shape[:2], dtype="uint8")
+    cv2.circle(ref_mask, ref_center, ref_radius, 255, -1)
+
+    # Le masque standard final sera celui de l'image de référence
+    standard_mask = ref_mask
+
+    # Appliquer le masque à l'image de référence pour la sauvegarde
+    im_ref_standardized = cv2.bitwise_and(im_ref, im_ref, mask=standard_mask)
     output_ref_path = os.path.join(output_dir, f"aligned_{reference_filename}")
-    cv2.imwrite(output_ref_path, im_ref)
+    cv2.imwrite(output_ref_path, im_ref_standardized)
     print(f"Image de référence sauvegardée dans : {output_ref_path}")
 
-    # Appliquer un filtre pour améliorer le contraste (CLAHE)
+    # Traitement pour la détection de caractéristiques sur l'image de référence originale
+    im_ref_gray = cv2.cvtColor(im_ref, cv2.COLOR_BGR2GRAY)
     clahe = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8, 8))
     im_ref_gray = clahe.apply(im_ref_gray)
-
-    # Initialiser le détecteur de caractéristiques SIFT
     sift = cv2.SIFT_create()
     kp1, des1 = sift.detectAndCompute(im_ref_gray, None)
 
@@ -103,24 +140,29 @@ def align_images(input_dir, output_dir):
             print(f"  -> Erreur de lecture, image ignorée.")
             continue
         
-        # Harmoniser la couleur de l'image courante avec l'image de référence
-        im_to_align = reinhard_color_transfer(im_to_align, im_ref)
+        # Trouver le cercle de la rétine pour l'image courante
+        src_center, src_radius = find_retina_circle(im_to_align)
+        if src_center is None:
+            print("  -> Impossible de trouver le cercle de la rétine, image ignorée.")
+            continue
+        src_mask = np.zeros(im_to_align.shape[:2], dtype="uint8")
+        cv2.circle(src_mask, src_center, src_radius, 255, -1)
+
+        # Harmoniser la couleur en utilisant les masques
+        im_to_align = reinhard_color_transfer(im_to_align, im_ref, src_mask, ref_mask)
             
+        # Détection de caractéristiques sur l'image normalisée en couleur
         im_to_align_gray = cv2.cvtColor(im_to_align, cv2.COLOR_BGR2GRAY)
         im_to_align_gray = clahe.apply(im_to_align_gray)
-
-        # Détecter les caractéristiques et descripteurs
         kp2, des2 = sift.detectAndCompute(im_to_align_gray, None)
 
         if des2 is None:
             print("  -> Aucun descripteur trouvé dans l'image courante, image ignorée.")
             continue
 
-        # Mise en correspondance des descripteurs avec un Brute-Force Matcher pour SIFT
+        # Mise en correspondance
         bf = cv2.BFMatcher(cv2.NORM_L2, crossCheck=False)
         matches = bf.knnMatch(des1, des2, k=2)
-
-        # Appliquer le "ratio test" de Lowe pour ne garder que les bons matches
         good_matches = []
         try:
             for m, n in matches:
@@ -130,26 +172,20 @@ def align_images(input_dir, output_dir):
             print("  -> Erreur lors du matching, image ignorée.")
             continue
 
-
         print(f"  -> {len(good_matches)} correspondances trouvées.")
 
-        # Il faut un minimum de correspondances pour calculer la transformation
         MIN_MATCH_COUNT = 10
         if len(good_matches) > MIN_MATCH_COUNT:
-            # Extraire les coordonnées des points correspondants
             src_pts = np.float32([kp1[m.queryIdx].pt for m in good_matches]).reshape(-1, 1, 2)
             dst_pts = np.float32([kp2[m.trainIdx].pt for m in good_matches]).reshape(-1, 1, 2)
 
-            # Calculer la matrice d'homographie
-            M, mask = cv2.findHomography(dst_pts, src_pts, cv2.RANSAC, 5.0)
+            M, _ = cv2.findHomography(dst_pts, src_pts, cv2.RANSAC, 5.0)
             
             if M is not None:
-                # Appliquer la transformation (warping)
                 im_aligned = cv2.warpPerspective(im_to_align, M, (width, height))
-
-                # Sauvegarder l'image alignée
+                im_aligned_standardized = cv2.bitwise_and(im_aligned, im_aligned, mask=standard_mask)
                 output_path = os.path.join(output_dir, f"aligned_{filename}")
-                cv2.imwrite(output_path, im_aligned)
+                cv2.imwrite(output_path, im_aligned_standardized)
                 print(f"  -> Image alignée et sauvegardée : {output_path}")
             else:
                 print("  -> Impossible de calculer la matrice d'homographie. Image ignorée.")
