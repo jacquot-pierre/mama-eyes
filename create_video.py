@@ -1,12 +1,12 @@
-
 import cv2
 import os
 import argparse
 import re
+from datetime import datetime
 
 def create_video_from_images(input_dir, output_file, fps=2):
     """
-    Crée une vidéo à partir d'une série d'images triées, en y ajoutant la date.
+    Crée une vidéo à partir d'une série d'images triées, en y ajoutant une timeline.
     """
     try:
         image_files = sorted([f for f in os.listdir(input_dir) if f.lower().endswith(('.png', '.jpg', '.jpeg'))])
@@ -17,50 +17,85 @@ def create_video_from_images(input_dir, output_file, fps=2):
         print(f"Le dossier d'entrée n'existe pas : {input_dir}")
         return
 
-    # Lire la première image pour obtenir les dimensions
-    first_image_path = os.path.join(input_dir, image_files[0])
-    frame = cv2.imread(first_image_path)
-    if frame is None:
-        print(f"Erreur lors de la lecture de la première image : {first_image_path}")
+    # 1. Extraire les dates et les chemins de fichiers
+    image_data = []
+    for filename in image_files:
+        match = re.search(r'(\d{4})_(\d{2})_(\d{2})', filename)
+        if match:
+            try:
+                date_str = f"{match.group(1)}-{match.group(2)}-{match.group(3)}"
+                date_obj = datetime.strptime(date_str, '%Y-%m-%d')
+                image_data.append({'path': os.path.join(input_dir, filename), 'date': date_obj})
+            except ValueError:
+                print(f"  -> Format de date non valide pour {filename}, image ignorée.")
+                continue
+    
+    if not image_data:
+        print("Aucune image avec un format de date valide n'a été trouvée.")
         return
-    height, width, layers = frame.shape
+
+    image_data.sort(key=lambda x: x['date'])
+
+    # 2. Préparer la timeline
+    min_date = image_data[0]['date']
+    max_date = image_data[-1]['date']
+    total_days = (max_date - min_date).days
+    if total_days == 0: total_days = 1 # Éviter la division par zéro
+
+    # Lire la première image pour obtenir les dimensions
+    frame = cv2.imread(image_data[0]['path'])
+    if frame is None: return
+    height, width, _ = frame.shape
 
     # Définir le codec et créer l'objet VideoWriter
-    # Le codec 'mp4v' est un bon choix pour les fichiers .mp4
     fourcc = cv2.VideoWriter_fourcc(*'mp4v')
     video = cv2.VideoWriter(output_file, fourcc, fps, (width, height))
 
     print(f"Création de la vidéo : {output_file} à {fps} images par seconde...")
 
-    # Boucler sur toutes les images
-    for filename in image_files:
-        image_path = os.path.join(input_dir, filename)
-        frame = cv2.imread(image_path)
-        if frame is None:
-            print(f"  -> Erreur de lecture, image {filename} ignorée.")
-            continue
+    # 3. Boucler sur les images et générer les trames
+    for data in image_data:
+        frame = cv2.imread(data['path'])
+        if frame is None: continue
 
-        # Extraire la date du nom de fichier (ex: aligned_2022_08_29_D.JPG -> 2022-08-29)
-        match = re.search(r'(\d{4}_\d{2}_\d{2})', filename)
-        if match:
-            date_str = match.group(1).replace('_', '-')
-            # Ajouter le texte de la date sur l'image
-            font = cv2.FONT_HERSHEY_SIMPLEX
-            position = (50, 100) # Position en (x, y) depuis le coin supérieur gauche
-            font_scale = 3
-            font_color = (255, 255, 255) # Blanc
-            line_type = 2
-            cv2.putText(frame, date_str, position, font, font_scale, font_color, line_type, cv2.LINE_AA)
+        # --- Dessiner la timeline ---
+        timeline_y = height - 80
+        timeline_start_x = 50
+        timeline_end_x = width - 50
+        timeline_width = timeline_end_x - timeline_start_x
+
+        # Fond de la timeline
+        cv2.rectangle(frame, (timeline_start_x, timeline_y - 10), (timeline_end_x, timeline_y + 10), (50, 50, 50), -1)
+
+        # Progression
+        days_from_start = (data['date'] - min_date).days
+        progress_width = int((days_from_start / total_days) * timeline_width)
+        cv2.rectangle(frame, (timeline_start_x, timeline_y - 10), (timeline_start_x + progress_width, timeline_y + 10), (255, 255, 255), -1)
+
+        # Marqueurs pour les années
+        for year in range(min_date.year, max_date.year + 2):
+            try:
+                year_date = datetime(year, 1, 1)
+                if min_date <= year_date <= max_date:
+                    days_from_start = (year_date - min_date).days
+                    marker_x = timeline_start_x + int((days_from_start / total_days) * timeline_width)
+                    cv2.line(frame, (marker_x, timeline_y - 20), (marker_x, timeline_y + 20), (200, 200, 200), 2)
+                    cv2.putText(frame, str(year), (marker_x - 40, timeline_y + 50), cv2.FONT_HERSHEY_SIMPLEX, 1, (255, 255, 255), 2)
+            except ValueError: # Gérer les années bissextiles ou autres erreurs de date
+                continue
+
+        # Affichage de la date courante
+        date_str_display = data['date'].strftime('%Y-%m-%d')
+        cv2.putText(frame, date_str_display, (50, height - 150), cv2.FONT_HERSHEY_SIMPLEX, 2, (255, 255, 255), 3, cv2.LINE_AA)
 
         video.write(frame)
 
-    # Libérer l'objet video
     video.release()
     cv2.destroyAllWindows()
     print(f"Vidéo sauvegardée avec succès : {output_file}")
 
 if __name__ == '__main__':
-    parser = argparse.ArgumentParser(description="Créer une vidéo à partir d'images alignées.")
+    parser = argparse.ArgumentParser(description="Créer une vidéo à partir d'images alignées avec une timeline.")
     parser.add_argument('--input_dir', type=str, required=True, help="Dossier contenant les images alignées.")
     parser.add_argument('--output_file', type=str, required=True, help="Fichier vidéo de sortie (ex: video.mp4).")
     parser.add_argument('--fps', type=int, default=2, help="Images par seconde pour la vidéo (par défaut: 2).")
