@@ -117,8 +117,18 @@ def align_images(input_dir, output_dir, reference_image_path=None):
     standard_mask = ref_mask
 
     im_ref_standardized = cv2.bitwise_and(im_ref, im_ref, mask=standard_mask)
+
+    # Appliquer aussi CLAHE à l'image de référence pour la cohérence
+    lab_ref = cv2.cvtColor(im_ref_standardized, cv2.COLOR_BGR2LAB)
+    l_ref, a_ref, b_ref = cv2.split(lab_ref)
+    clahe_final_ref = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8, 8))
+    l_clahe_ref = clahe_final_ref.apply(l_ref)
+    lab_clahe_ref = cv2.merge((l_clahe_ref, a_ref, b_ref))
+    final_ref_image = cv2.cvtColor(lab_clahe_ref, cv2.COLOR_LAB2BGR)
+    final_ref_image = cv2.bitwise_and(final_ref_image, final_ref_image, mask=standard_mask)
+
     output_ref_path = os.path.join(output_dir, f"aligned_{reference_filename}")
-    cv2.imwrite(output_ref_path, im_ref_standardized)
+    cv2.imwrite(output_ref_path, final_ref_image)
     print(f"Image de référence sauvegardée dans : {output_ref_path}")
 
     # Préparation pour la détection de caractéristiques
@@ -176,8 +186,20 @@ def align_images(input_dir, output_dir, reference_image_path=None):
             if M is not None:
                 im_aligned = cv2.warpPerspective(im_to_align, M, (width, height))
                 im_aligned_standardized = cv2.bitwise_and(im_aligned, im_aligned, mask=standard_mask)
+
+                # Étape finale : appliquer CLAHE pour uniformiser la luminosité interne
+                lab = cv2.cvtColor(im_aligned_standardized, cv2.COLOR_BGR2LAB)
+                l, a, b = cv2.split(lab)
+                clahe_final = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8, 8))
+                l_clahe = clahe_final.apply(l)
+                lab_clahe = cv2.merge((l_clahe, a, b))
+                final_image = cv2.cvtColor(lab_clahe, cv2.COLOR_LAB2BGR)
+
+                # S'assurer que le fond reste noir
+                final_image = cv2.bitwise_and(final_image, final_image, mask=standard_mask)
+
                 output_path = os.path.join(output_dir, f"aligned_{filename}")
-                cv2.imwrite(output_path, im_aligned_standardized)
+                cv2.imwrite(output_path, final_image)
                 print(f"  -> Image alignée et sauvegardée : {output_path}")
             else:
                 print("  -> Impossible de calculer la matrice d'homographie. Image ignorée.")
