@@ -27,7 +27,7 @@ def find_retina_circle(image):
     (x, y), radius = cv2.minEnclosingCircle(largest_contour)
 
     # Réduire légèrement le rayon pour être plus conservateur
-    radius = radius * 0.98
+    radius = radius * 0.95
     
     return (int(x), int(y)), int(radius)
 
