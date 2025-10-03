@@ -42,6 +42,15 @@ def analyze_drusen_regression_by_segmentation(input_dir, output_dir, block_size=
 
     print(f"Analyse par segmentation pré-traitée dans : {input_dir}")
 
+    # Traiter la première image pour l'affichage, sans régression
+    first_image_data = image_data[0]
+    output_image = cv2.imread(first_image_data['path'])
+    output_filename = f"preprocessed_regression_up_to_{first_image_data['date'].strftime('%Y%m%d')}.jpg"
+    output_path = os.path.join(output_dir, output_filename)
+    cv2.imwrite(output_path, output_image)
+    print(f"Image initiale sauvegardée : {output_path}")
+
+    # Boucler sur les paires d'images consécutives, en commençant par la première paire
     for i in range(len(image_data) - 1):
         image_A_data = image_data[i]
         image_B_data = image_data[i+1]
@@ -85,7 +94,7 @@ def analyze_drusen_regression_by_segmentation(input_dir, output_dir, block_size=
         print(f"  -> {len(contours)} zones de régression cumulées détectées.")
 
         # Sauvegarder l'image
-        output_filename = f"preprocessed_regression_up_to_{image_B_data['date'].strftime('%Y%m%d')}.jpg"
+        output_filename = f"analysis_{image_B_data['date'].strftime('%Y_%m_%d')}.jpg"
         output_path = os.path.join(output_dir, output_filename)
         cv2.imwrite(output_path, output_image)
         print(f"  -> Image d'analyse sauvegardée : {output_path}")
