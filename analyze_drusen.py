@@ -7,18 +7,14 @@ from datetime import datetime
 
 def preprocess_for_segmentation(image_gray):
     """ Prépare l'image pour une segmentation optimale des druses. """
-    # 1. Améliorer le contraste local pour faire ressortir les druses
     clahe = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8, 8))
     contrast_enhanced = clahe.apply(image_gray)
-
-    # 2. Lisser l'image pour réduire le bruit tout en préservant les bords
     blurred = cv2.medianBlur(contrast_enhanced, 5)
-    
     return blurred
 
 def analyze_drusen_regression_by_segmentation(input_dir, output_dir, block_size=151, C=-8):
     """
-    Analyse la régression des druses en utilisant une segmentation pré-traitée.
+    Analyse la régression des druses et calcule le pourcentage de druses initiales disparues.
     """
     os.makedirs(output_dir, exist_ok=True)
 
@@ -35,22 +31,29 @@ def analyze_drusen_regression_by_segmentation(input_dir, output_dir, block_size=
             image_data.append({'path': os.path.join(input_dir, filename), 'date': datetime.strptime(date_str, '%Y-%m-%d'), 'filename': filename})
     image_data.sort(key=lambda x: x['date'])
 
-    first_image = cv2.imread(image_data[0]['path'])
+    # 1. Analyser les druses sur la première image pour obtenir la surface de référence
+    first_image_data = image_data[0]
+    first_image = cv2.imread(first_image_data['path'])
     if first_image is None: return
     height, width, _ = first_image.shape
+
+    first_image_gray = cv2.cvtColor(first_image, cv2.COLOR_BGR2GRAY)
+    preprocessed_first = preprocess_for_segmentation(first_image_gray)
+    initial_drusen_mask = cv2.adaptiveThreshold(preprocessed_first, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C, \
+                                                cv2.THRESH_BINARY, block_size, C)
+    initial_drusen_area = cv2.countNonZero(initial_drusen_mask)
+    if initial_drusen_area == 0:
+        print("Aucune druse détectée dans l'image initiale.")
+        return
+
     cumulative_regression_mask = np.zeros((height, width), dtype="uint8")
 
-    print(f"Analyse par segmentation pré-traitée dans : {input_dir}")
+    # Sauvegarder la première image avec 0% de régression
+    percentage_text_first = "Regression: 0.00%"
+    cv2.putText(first_image, percentage_text_first, (50, 150), cv2.FONT_HERSHEY_SIMPLEX, 2, (0, 255, 255), 3)
+    output_filename_first = f"analysis_{first_image_data['date'].strftime('%Y_%m_%d')}.jpg"
+    cv2.imwrite(os.path.join(output_dir, output_filename_first), first_image)
 
-    # Traiter la première image pour l'affichage, sans régression
-    first_image_data = image_data[0]
-    output_image = cv2.imread(first_image_data['path'])
-    output_filename = f"preprocessed_regression_up_to_{first_image_data['date'].strftime('%Y%m%d')}.jpg"
-    output_path = os.path.join(output_dir, output_filename)
-    cv2.imwrite(output_path, output_image)
-    print(f"Image initiale sauvegardée : {output_path}")
-
-    # Boucler sur les paires d'images consécutives, en commençant par la première paire
     for i in range(len(image_data) - 1):
         image_A_data = image_data[i]
         image_B_data = image_data[i+1]
@@ -62,42 +65,58 @@ def analyze_drusen_regression_by_segmentation(input_dir, output_dir, block_size=
 
         if image_A_gray is None or image_B_gray is None: continue
 
-        # 1. Pré-traiter chaque image
         preprocessed_A = preprocess_for_segmentation(image_A_gray)
         preprocessed_B = preprocess_for_segmentation(image_B_gray)
 
-        # 2. Appliquer la segmentation adaptative sur les images pré-traitées
-        mask_A = cv2.adaptiveThreshold(preprocessed_A, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C, \
-                                       cv2.THRESH_BINARY, block_size, C)
-        mask_B = cv2.adaptiveThreshold(preprocessed_B, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C, \
-                                       cv2.THRESH_BINARY, block_size, C)
+        mask_A = cv2.adaptiveThreshold(preprocessed_A, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C, cv2.THRESH_BINARY, block_size, C)
+        mask_B = cv2.adaptiveThreshold(preprocessed_B, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C, cv2.THRESH_BINARY, block_size, C)
 
-        # 3. Trouver ce qui est dans A mais PAS dans B
         disappeared_mask = cv2.subtract(mask_A, mask_B)
-
-        # 4. Nettoyer le masque de disparition
         kernel = np.ones((3,3), np.uint8)
         cleaned_disappeared_mask = cv2.morphologyEx(disappeared_mask, cv2.MORPH_OPEN, kernel, iterations=2)
 
-        # 5. Ajouter au masque cumulatif
         cumulative_regression_mask = cv2.bitwise_or(cumulative_regression_mask, cleaned_disappeared_mask)
 
-        # 6. Dessiner le résultat
+        # Calcul du pourcentage par rapport aux druses initiales
+        regression_area = cv2.countNonZero(cumulative_regression_mask)
+        percentage = (regression_area / initial_drusen_area) * 100
+
         output_image = cv2.imread(image_B_data['path'])
         overlay = output_image.copy()
-        overlay[cumulative_regression_mask > 0] = (0, 255, 0) # Surlignage en vert
+        overlay[cumulative_regression_mask > 0] = (0, 255, 0)
         
         alpha = 0.4
         cv2.addWeighted(overlay, alpha, output_image, 1 - alpha, 0, output_image)
 
-        contours, _ = cv2.findContours(cumulative_regression_mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-        print(f"  -> {len(contours)} zones de régression cumulées détectées.")
+        percentage_text = f"Regression: {percentage:.2f}%"
+        print(f"  -> {percentage_text}")
+        cv2.putText(output_image, percentage_text, (50, 150), cv2.FONT_HERSHEY_SIMPLEX, 2, (0, 255, 255), 3)
 
-        # Sauvegarder l'image
         output_filename = f"analysis_{image_B_data['date'].strftime('%Y_%m_%d')}.jpg"
         output_path = os.path.join(output_dir, output_filename)
         cv2.imwrite(output_path, output_image)
         print(f"  -> Image d'analyse sauvegardée : {output_path}")
+
+    # --- Génération de l'image de synthèse finale ---
+    print("\nCréation de l'image de synthèse finale...")
+    last_image = cv2.imread(image_data[-1]['path'])
+    summary_image = last_image.copy()
+    alpha = 0.5 # Transparence plus marquée pour la lisibilité
+
+    # Superposer les druses initiales en rouge
+    initial_overlay = summary_image.copy()
+    initial_overlay[initial_drusen_mask > 0] = (0, 0, 255) # Rouge
+    cv2.addWeighted(initial_overlay, alpha, summary_image, 1 - alpha, 0, summary_image)
+
+    # Superposer les régressions en vert
+    regression_overlay = summary_image.copy()
+    regression_overlay[cumulative_regression_mask > 0] = (0, 255, 0) # Vert
+    cv2.addWeighted(regression_overlay, alpha, summary_image, 1 - alpha, 0, summary_image)
+
+    summary_filename = "final_summary.jpg"
+    summary_path = os.path.join(output_dir, summary_filename)
+    cv2.imwrite(summary_path, summary_image)
+    print(f"  -> Image de synthèse sauvegardée : {summary_path}")
 
     print("\nAnalyse terminée.")
 
@@ -108,5 +127,4 @@ if __name__ == '__main__':
     parser.add_argument('--block_size', type=int, default=151, help="Taille du voisinage pour le seuillage adaptatif (doit être impair).")
     parser.add_argument('--C', type=int, default=-8, help="Constante soustraite à la moyenne locale.")
     args = parser.parse_args()
-    
     analyze_drusen_regression_by_segmentation(args.input_dir, args.output_dir, args.block_size, args.C)
