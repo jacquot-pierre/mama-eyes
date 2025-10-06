@@ -89,7 +89,11 @@ def create_video_from_images(input_dir, output_file, fps=2):
         cv2.putText(frame, date_str_display, (50, height - 150), cv2.FONT_HERSHEY_SIMPLEX, 2, (255, 255, 255), 3, cv2.LINE_AA)
 
         video.write(frame)
-
+    # Rajouté par FJ *******************************************************
+    # on répete 10 fois la dernière image pour pouvoir apprécier le résultat final qui est le plus important
+    for i in range(10):
+        video.write(frame)   
+    # *********************************************************************
     video.release()
     cv2.destroyAllWindows()
     print(f"Vidéo sauvegardée avec succès : {output_file}")
