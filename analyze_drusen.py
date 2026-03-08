@@ -3,12 +3,14 @@ import numpy as np
 import os
 import argparse
 import re
+import json
 from datetime import datetime
 
 def analyze_drusen_regression(input_dir, output_dir, threshold=30):
     """
     Analyse la régression des druses de manière cumulative en confirmant
     la disparition sur deux images consécutives.
+    Exporte également un fichier JSON des pourcentages de régression.
     """
     os.makedirs(output_dir, exist_ok=True)
 
@@ -38,6 +40,19 @@ def analyze_drusen_regression(input_dir, output_dir, threshold=30):
     if first_image is None: return
     height, width, _ = first_image.shape
     cumulative_mask = np.zeros((height, width), dtype="uint8")
+
+    # Calcul de la surface de référence (le disque rétinien) pour les pourcentages
+    first_image_blur = cv2.GaussianBlur(first_image, (0,0), 3)
+    first_image_gray = cv2.cvtColor(first_image_blur, cv2.COLOR_BGR2GRAY)
+    _, thresh_ref = cv2.threshold(first_image_gray, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
+    contours_ref, _ = cv2.findContours(thresh_ref, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+    reference_area = 1.0 # fallback
+    if contours_ref:
+        largest_contour_ref = max(contours_ref, key=cv2.contourArea)
+        _, radius_ref = cv2.minEnclosingCircle(largest_contour_ref)
+        reference_area = np.pi * ((radius_ref * 0.90) ** 2)
+
+    export_data = [] # Pour stocker les données JSON
 
     print(f"Analyse cumulative robuste de la régression des druses dans : {input_dir}")
 
@@ -86,9 +101,26 @@ def analyze_drusen_regression(input_dir, output_dir, threshold=30):
         output_filename = f"cumulative_regression_up_to_{image_C_data['date'].strftime('%Y%m%d')}.jpg"
         output_path = os.path.join(output_dir, output_filename)
         cv2.imwrite(output_path, output_image)
-        print(f"  -> Image d'analyse cumulative sauvegardée : {output_path}")
 
-    print("\nAnalyse cumulative terminée.")
+        # Calculer le pourcentage de régression
+        regression_pixels = cv2.countNonZero(cumulative_mask)
+        percentage = (regression_pixels / reference_area) * 100.0
+        print(f"  -> Image d'analyse cumulative sauvegardée : {output_path}")
+        print(f"  -> Régression cumulée : {percentage:.4f}% de la surface de référence.")
+
+        # Ajouter aux données d'export JSON
+        export_data.append({
+            "date": image_C_data['date'].strftime('%Y-%m-%d'),
+            "percentage": round(percentage, 4),
+            "filename": output_filename
+        })
+
+    # Sauvegarde du fichier JSON final
+    json_path = os.path.join(output_dir, "evolution_stats.json")
+    with open(json_path, 'w', encoding='utf-8') as f:
+        json.dump(export_data, f, indent=4)
+        
+    print(f"\nAnalyse cumulative terminée. Données exportées vers : {json_path}")
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser(description="Analyser la régression des druses de manière cumulative et robuste.")
