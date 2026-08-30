@@ -1,5 +1,41 @@
-*.mp4
+# --- Données d'imagerie : ne doivent JAMAIS entrer dans le dépôt ---
+# Le filtre est sensible à la casse sous Linux : lister les deux formes.
 *.jpg
-aligned_images
-images_to_align
-.venv
+*.JPG
+*.jpeg
+*.JPEG
+*.png
+*.PNG
+*.tif
+*.tiff
+*.npy
+*.npz
+
+# Bibliothèque et sorties
+data/
+exports/
+aligned_images/
+images_to_align/
+analysis_results/
+
+# Vidéos
+*.mp4
+*.avi
+*.mov
+
+# Python
+.venv/
+venv/
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+build/
+dist/
+
+# Outils
+.idea/
+.vscode/
+.DS_Store
