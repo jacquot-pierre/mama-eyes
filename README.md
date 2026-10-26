@@ -45,9 +45,12 @@ poetry run python analyze_drusen.py --input_dir ./aligned_images/oeil_gauche --o
 Chaque photo est recalée sur la première (SIFT + homographie). D'une visite à l'autre, l'œil est
 décalé d'environ 250 px dans le cercle de l'appareil photo : une fois la rétine recalée, les disques
 photographiés ne se superposent donc plus. Toutes les images sont découpées avec le même cercle,
-le plus grand contenu dans la zone visible sur toutes les dates (rayon d'environ 715 px pour des
-photos de 3008×2000). Le disque reste ainsi un cercle parfait et identique d'une date à l'autre,
-au prix d'un peu de périphérie.
+le plus grand contenu dans la zone visible sur toutes les dates (rayon d'environ 865 px pour des
+photos de 3008×2000). Le disque reste ainsi un cercle parfait et identique d'une date à l'autre.
+
+Une seule photo cadrée très différemment des autres suffit à réduire ce cercle pour toute la série :
+le rayon est affiché au lancement du script. Les photos du 2018-02-19 et du 2018-06-14 ont été
+retirées pour cette raison.
 
 
 # Uniformisation de la colorimétrie (`align_images.py`)

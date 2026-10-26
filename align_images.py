@@ -19,7 +19,8 @@ def find_retina_circle(image):
         return None, None
     largest_contour = max(contours, key=cv2.contourArea)
     (x, y), radius = cv2.minEnclosingCircle(largest_contour)
-    radius = radius * 0.90
+    # Petite marge pour éviter le liseré du bord de l'ouverture
+    radius = radius * 0.95
     return (int(x), int(y)), int(radius)
 
 def color_transfer_to_target(source_image, source_mask, target_stats):
