@@ -39,6 +39,12 @@ poetry run python build_masks.py --input_dir ./aligned_images/oeil_droit --outpu
 
 poetry run python build_masks.py --input_dir ./aligned_images/oeil_gauche --output_dir ./masks/oeil_gauche
 
+poetry run python detect_drusen.py --input_dir ./aligned_images/oeil_droit --masks_dir ./masks/oeil_droit --output_dir ./drusen/oeil_droit
+
+poetry run python detect_drusen.py --input_dir ./aligned_images/oeil_gauche --masks_dir ./masks/oeil_gauche --output_dir ./drusen/oeil_gauche
+
+poetry run python create_video.py --input_dir ./drusen/oeil_droit/overlays --output_file ./druses_oeil_droit.mp4
+
 poetry run python analyze_drusen.py --input_dir ./aligned_images/oeil_droit --output_dir ./analysis_results/oeil_droit --threshold 25
 
 poetry run python analyze_drusen.py --input_dir ./aligned_images/oeil_gauche --output_dir ./analysis_results/oeil_gauche --threshold 25
@@ -63,6 +69,31 @@ de toutes les dates (nette et sans défaut propre à une photo), puis valent pou
 Le dossier de sortie contient `reference.png` (image médiane), un PNG par calque, `analysis_zone.png`
 (rétine moins tous les calques) et `control.jpg`, la référence avec les calques en couleur pour
 vérifier le résultat à l'œil. Options : `--vessel_margin`, `--disc_margin`, `--fovea_ratio`, `--border_width`.
+
+
+# Détection des druses par date (`detect_drusen.py`)
+Chaque image alignée est analysée indépendamment, dans la zone d'analyse définie par les calques.
+
+- **Score de druse** : contraste relatif du canal vert par rapport au niveau typique du voisinage
+  (médiane locale sur ~100 px). Les vaisseaux sont effacés avant le calcul. La médiane n'est tirée ni
+  par les druses ni par les zones sombres : l'intérieur et le bord des zones d'atrophie ne produisent
+  quasiment pas de fausses détections.
+- **Seuillage à deux niveaux** : une druse est une région de contraste supérieur à `--low` (0,07)
+  contenant au moins un point supérieur à `--high` (0,12). Cela élimine le bruit tout en gardant
+  une forme fidèle.
+- **Filtres de forme** : surface minimale (`--min_area`, 40 px) et allongement maximal
+  (`--max_elongation`, 4) pour écarter les liserés clairs le long des vaisseaux.
+
+Sorties dans le dossier choisi :
+- `scores/score_<date>.png` : carte du score (contraste relatif × 1000, sur 8 bits), base de
+  l'analyse temporelle ;
+- `masks/drusen_<date>.png` : druses détectées ;
+- `overlays/drusen_<date>.jpg` : image avec les contours des druses (utilisable par `create_video.py`) ;
+- `drusen_summary.csv` : nombre de druses et surface (en pixels et en % de la zone analysée) par date.
+
+Chaque date est traitée seule : une photo atypique peut donc donner une détection un peu différente
+de ses voisines. La confirmation d'une apparition ou d'une disparition sur plusieurs dates relève de
+l'analyse temporelle.
 
 
 # Alignement et découpage (`align_images.py`)
