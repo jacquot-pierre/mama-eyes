@@ -72,14 +72,24 @@ vérifier le résultat à l'œil. Options : `--vessel_margin`, `--disc_margin`, 
 
 
 # Détection des druses par date (`detect_drusen.py`)
-Chaque image alignée est analysée indépendamment, dans la zone d'analyse définie par les calques.
+Les druses sont cherchées sur chaque date, dans la zone d'analyse définie par les calques
+(il faut donc lancer `build_masks.py` avant, qui fournit aussi l'image médiane).
 
-- **Score de druse** : contraste relatif du canal vert par rapport au niveau typique du voisinage
-  (médiane locale sur ~100 px). Les vaisseaux sont effacés avant le calcul. La médiane n'est tirée ni
-  par les druses ni par les zones sombres : l'intérieur et le bord des zones d'atrophie ne produisent
-  quasiment pas de fausses détections.
-- **Seuillage à deux niveaux** : une druse est une région de contraste supérieur à `--low` (0,07)
-  contenant au moins un point supérieur à `--high` (0,12). Cela élimine le bruit tout en gardant
+- **Fond commun** : le niveau de la rétine « ordinaire » est estimé une seule fois, sur l'image
+  médiane de toutes les dates, en ignorant les druses, les zones sombres (atrophie) et les vaisseaux.
+  Deux pièges sont ainsi évités :
+  - dans les zones presque couvertes de druses, un fond calculé localement serait au niveau des
+    druses elles-mêmes, qui ne ressortiraient qu'à peine et seraient détectées une date sur deux ;
+  - un fond propre à chaque date suivrait l'évolution de la rétine (atrophie qui s'étend) et ferait
+    apparaître de fausses « nouvelles druses » autour des zones qui changent.
+  Grâce à l'harmonisation des couleurs entre dates, une druse qui se résorbe redescend simplement
+  au niveau de ce fond commun.
+- **Score de druse** : contraste relatif du canal vert (vaisseaux effacés) par rapport au fond commun.
+- **Médiane sur plusieurs dates** : le score de chaque date est la médiane de celui de
+  `--temporal_window` dates consécutives (3 par défaut). Une druse doit donc être vue sur la majorité
+  de ces dates : une photo atypique ne crée plus d'apparition ou de disparition isolée.
+- **Seuillage à deux niveaux** : une druse est une région de contraste supérieur à `--low` (0,12)
+  contenant au moins un point supérieur à `--high` (0,18). Cela élimine le bruit tout en gardant
   une forme fidèle.
 - **Filtres de forme** : surface minimale (`--min_area`, 40 px) et allongement maximal
   (`--max_elongation`, 4) pour écarter les liserés clairs le long des vaisseaux.
@@ -91,9 +101,10 @@ Sorties dans le dossier choisi :
 - `overlays/drusen_<date>.jpg` : image avec les contours des druses (utilisable par `create_video.py`) ;
 - `drusen_summary.csv` : nombre de druses et surface (en pixels et en % de la zone analysée) par date.
 
-Chaque date est traitée seule : une photo atypique peut donc donner une détection un peu différente
-de ses voisines. La confirmation d'une apparition ou d'une disparition sur plusieurs dates relève de
-l'analyse temporelle.
+Résultats sur la série actuelle : d'une date à l'autre, environ 2 % des pixels de la zone analysée
+changent d'état (contre près de 5 % avec un fond calculé date par date et sans médiane temporelle),
+et la surface de druses baisse de 25 à 17 % de la zone (œil droit) et de 28 à 23 % (œil gauche)
+entre 2018 et 2025. Les druses disparues forment des zones continues, là où l'atrophie s'est étendue.
 
 
 # Alignement et découpage (`align_images.py`)
