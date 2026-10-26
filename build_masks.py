@@ -154,7 +154,7 @@ def save_control_image(reference, layers, output_path):
         cv2.putText(control, name, (30, 60 + 50 * i), cv2.FONT_HERSHEY_SIMPLEX, 1.4, color, 3)
     cv2.imwrite(output_path, control, [cv2.IMWRITE_JPEG_QUALITY, 92])
 
-def build_masks(input_dir, output_dir, vessel_margin=4, disc_margin=1.3, fovea_ratio=0.35, border_width=30):
+def build_masks(input_dir, output_dir, vessel_margin=4, disc_margin=1.3, fovea_ratio=0.35, border_width=15):
     os.makedirs(output_dir, exist_ok=True)
     files, images = load_aligned_images(input_dir)
     if not images:
@@ -206,6 +206,6 @@ if __name__ == '__main__':
     parser.add_argument('--disc_margin', type=float, default=1.3, help="Facteur d'agrandissement du masque de la papille.")
     parser.add_argument('--fovea_ratio', type=float, default=0.35,
                         help="Rayon du masque fovéal, en fraction du diamètre papillaire.")
-    parser.add_argument('--border_width', type=int, default=30, help="Largeur (px) de la couronne exclue au bord.")
+    parser.add_argument('--border_width', type=int, default=15, help="Largeur (px) de la couronne exclue au bord.")
     args = parser.parse_args()
     build_masks(args.input_dir, args.output_dir, args.vessel_margin, args.disc_margin, args.fovea_ratio, args.border_width)

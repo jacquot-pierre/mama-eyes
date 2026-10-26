@@ -45,6 +45,8 @@ poetry run python detect_drusen.py --input_dir ./aligned_images/oeil_gauche --ma
 
 poetry run python create_video.py --input_dir ./drusen/oeil_droit/overlays --output_file ./druses_oeil_droit.mp4
 
+poetry run python create_video.py --input_dir ./drusen/oeil_droit/density_overlays --output_file ./densite_oeil_droit.mp4
+
 poetry run python analyze_drusen.py --input_dir ./aligned_images/oeil_droit --output_dir ./analysis_results/oeil_droit --threshold 25
 
 poetry run python analyze_drusen.py --input_dir ./aligned_images/oeil_gauche --output_dir ./analysis_results/oeil_gauche --threshold 25
@@ -94,17 +96,36 @@ Les druses sont cherchées sur chaque date, dans la zone d'analyse définie par 
 - **Filtres de forme** : surface minimale (`--min_area`, 40 px) et allongement maximal
   (`--max_elongation`, 4) pour écarter les liserés clairs le long des vaisseaux.
 
-Sorties dans le dossier choisi :
-- `scores/score_<date>.png` : carte du score (contraste relatif × 1000, sur 8 bits), base de
-  l'analyse temporelle ;
-- `masks/drusen_<date>.png` : druses détectées ;
-- `overlays/drusen_<date>.jpg` : image avec les contours des druses (utilisable par `create_video.py`) ;
-- `drusen_summary.csv` : nombre de druses et surface (en pixels et en % de la zone analysée) par date.
+**Petites druses.** En dehors du centre, la rétine est souvent tapissée de petites druses fines et
+serrées (10 à 20 px), si nombreuses qu'elles relèvent le fond commun à leur propre niveau : le
+détecteur précédent ne les voit pas. Un second détecteur les compare à leur voisinage immédiat
+(top-hat morphologique sur ~20 px) : à cette échelle, les petits creux entre deux druses suffisent
+à définir le fond. Même médiane temporelle, seuils `--fine_low` (0,06) / `--fine_high` (0,10),
+surface minimale `--fine_min_area` (15 px). Le résultat final est l'union des deux détections.
+Ces druses étant à peine au-dessus du bruit de l'image, leurs contours individuels restent
+approximatifs : pour les suivre dans le temps, la densité ci-dessous est plus fiable.
 
-Résultats sur la série actuelle : d'une date à l'autre, environ 2 % des pixels de la zone analysée
-changent d'état (contre près de 5 % avec un fond calculé date par date et sans médiane temporelle),
-et la surface de druses baisse de 25 à 17 % de la zone (œil droit) et de 28 à 23 % (œil gauche)
-entre 2018 et 2025. Les druses disparues forment des zones continues, là où l'atrophie s'est étendue.
+**Densité de druses fines.** Pour chaque point, intensité moyenne des petites taches claires sur
+une fenêtre d'environ `--density_sigma` px (40). Cette carte ne dépend d'aucun seuil et varie très
+peu d'une date à l'autre : c'est la mesure la plus stable pour suivre la disparition des druses.
+
+Sorties dans le dossier choisi :
+- `scores/score_<date>.png` : score du détecteur principal (contraste relatif × 1000, sur 8 bits) ;
+- `masks/drusen_<date>.png` : druses détectées (union des deux détecteurs) ;
+- `overlays/drusen_<date>.jpg` : image avec les contours (vert : druses franches, jaune : petites
+  druses), utilisable par `create_video.py` ;
+- `density/density_<date>.png` : densité de druses fines (× 4000, sur 8 bits) ;
+- `density_overlays/density_<date>.jpg` : densité en carte de chaleur sur la photo (clair = dense,
+  violet = peu ou pas de druses), utilisable par `create_video.py` ;
+- `drusen_summary.csv` : par date, nombre de druses, surface (en pixels et en % de la zone analysée),
+  part des petites druses et densité moyenne.
+
+Résultats sur la série actuelle, entre 2018 et 2025 :
+- densité moyenne : de 0,046 à 0,033 (œil droit, −27 %) et de 0,046 à 0,036 (œil gauche, −21 %),
+  avec une variation d'une date à l'autre plus de dix fois inférieure à cette baisse ;
+- surface de druses : de 35 à 24 % de la zone analysée (œil droit) et de 38 à 30 % (œil gauche) ;
+- environ 2 % des pixels changent d'état d'une date à l'autre pour le détecteur principal ; les
+  druses disparues forment des zones continues, là où l'atrophie s'est étendue.
 
 
 # Alignement et découpage (`align_images.py`)

@@ -7,6 +7,8 @@ import re
 
 # Le score de druse est enregistré en PNG 8 bits : valeur = contraste relatif × SCORE_SCALE
 SCORE_SCALE = 1000
+# Idem pour la densité de druses fines (valeurs typiques 0,01 à 0,06)
+DENSITY_SCALE = 4000
 
 def local_background(channel, retina, size=101, scale=4):
     """
@@ -79,22 +81,37 @@ def drusen_score(image, vessels, background):
     _, smooth = green_without_vessels(image, vessels)
     return (smooth - background) / np.maximum(background, 10)
 
-def temporal_median_scores(image_paths, vessels, background, window):
+def fine_drusen_score(image, vessels, radius=10):
+    """
+    Score des petites druses : contraste relatif par rapport au voisinage immédiat
+    (top-hat morphologique, disque d'environ 2 × radius px). À cette échelle, les petits
+    creux entre deux druses fines suffisent à définir le fond, même dans une zone
+    entièrement tapissée de druses, où le fond commun est au niveau des druses elles-mêmes.
+    """
+    _, smooth = green_without_vessels(image, vessels)
+    kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (2 * radius + 1, 2 * radius + 1))
+    opened = cv2.GaussianBlur(cv2.morphologyEx(smooth, cv2.MORPH_OPEN, kernel), (0, 0), radius / 2)
+    return (smooth - opened) / np.maximum(opened, 10)
+
+def temporal_median_scores(image_paths, score_function, window):
     """
     Pour chaque date, médiane pixel par pixel des scores de `window` dates consécutives
     centrées sur elle : une druse doit être vue sur la majorité de ces dates pour ressortir.
-    Les scores sont calculés au fil de l'eau pour ne garder que `window` images en mémoire.
+    score_function renvoie un tuple de cartes de score ; chacune est filtrée séparément.
+    Les scores sont calculés au fil de l'eau pour ne garder que `window` dates en mémoire.
     """
     half = window // 2
     buffer = {}
     for i in range(len(image_paths)):
-        for j in range(max(i - half, 0), min(i + half, len(image_paths) - 1) + 1):
+        indices = range(max(i - half, 0), min(i + half, len(image_paths) - 1) + 1)
+        for j in indices:
             if j not in buffer:
-                buffer[j] = drusen_score(cv2.imread(image_paths[j]), vessels, background).astype(np.float32)
+                buffer[j] = tuple(s.astype(np.float32) for s in score_function(cv2.imread(image_paths[j])))
         for j in [k for k in buffer if k < i - half]:
             del buffer[j]
-        neighbors = [buffer[j] for j in range(max(i - half, 0), min(i + half, len(image_paths) - 1) + 1)]
-        yield np.median(np.stack(neighbors), axis=0) if len(neighbors) > 1 else neighbors[0]
+        neighbors = [buffer[j] for j in indices]
+        yield tuple(np.median(np.stack([n[k] for n in neighbors]), axis=0) if len(neighbors) > 1 else neighbors[0][k]
+                    for k in range(len(neighbors[0])))
 
 def segment_drusen(score, zone, low, high, min_area, max_elongation):
     """
@@ -125,9 +142,20 @@ def date_from_filename(filename):
     match = re.search(r'(\d{4})_(\d{2})_(\d{2})', filename)
     return f"{match.group(1)}_{match.group(2)}_{match.group(3)}" if match else os.path.splitext(filename)[0]
 
+def density_heatmap(image, density, retina):
+    """
+    Image de contrôle de la densité : carte de chaleur fondue avec la photo
+    (clair = beaucoup de druses fines, violet = peu ou pas de druses).
+    """
+    values = np.clip((density * DENSITY_SCALE - 60) * 1.5, 0, 255).astype(np.uint8)
+    heat = cv2.applyColorMap(values, cv2.COLORMAP_INFERNO)
+    blend = cv2.addWeighted(image, 0.45, heat, 0.55, 0)
+    blend[~retina] = 0
+    return blend
+
 def detect_drusen(input_dir, masks_dir, output_dir, low=0.12, high=0.18, min_area=40, max_elongation=4.0,
-                  temporal_window=3):
-    for sub in ('scores', 'masks', 'overlays'):
+                  temporal_window=3, fine_low=0.06, fine_high=0.10, fine_min_area=15, density_sigma=40.0):
+    for sub in ('scores', 'masks', 'overlays', 'density', 'density_overlays'):
         os.makedirs(os.path.join(output_dir, sub), exist_ok=True)
     try:
         image_files = sorted([f for f in os.listdir(input_dir) if f.lower().endswith(('.png', '.jpg', '.jpeg'))])
@@ -150,28 +178,47 @@ def detect_drusen(input_dir, masks_dir, output_dir, low=0.12, high=0.18, min_are
 
     summary = []
     image_paths = [os.path.join(input_dir, f) for f in image_files]
-    scores = temporal_median_scores(image_paths, vessels, background, temporal_window)
-    for filename, score in zip(image_files, scores):
+    score_function = lambda image: (drusen_score(image, vessels, background), fine_drusen_score(image, vessels))
+    scores = temporal_median_scores(image_paths, score_function, temporal_window)
+    for filename, (score, fine_score) in zip(image_files, scores):
         image = cv2.imread(os.path.join(input_dir, filename))
         date = date_from_filename(filename)
-        drusen = segment_drusen(score, zone, low, high, min_area, max_elongation)
+
+        # Druses franches (fond commun) et petites druses (voisinage immédiat)
+        large = segment_drusen(score, zone, low, high, min_area, max_elongation)
+        small = segment_drusen(fine_score, zone, fine_low, fine_high, fine_min_area, max_elongation) & ~large
+        drusen = large | small
+
+        # Densité de druses fines : intensité moyenne des petites taches claires alentour
+        density = masked_blur(np.clip(fine_score, 0, None), zone, density_sigma)
+        density[~zone] = 0
 
         score_png = np.clip(np.where(zone, score, 0) * SCORE_SCALE, 0, 255).astype(np.uint8)
         cv2.imwrite(os.path.join(output_dir, 'scores', f'score_{date}.png'), score_png)
         cv2.imwrite(os.path.join(output_dir, 'masks', f'drusen_{date}.png'), drusen.astype(np.uint8) * 255)
+        density_png = np.clip(density * DENSITY_SCALE, 0, 255).astype(np.uint8)
+        cv2.imwrite(os.path.join(output_dir, 'density', f'density_{date}.png'), density_png)
+        cv2.imwrite(os.path.join(output_dir, 'density_overlays', f'density_{date}.jpg'),
+                    density_heatmap(image, density, retina), [cv2.IMWRITE_JPEG_QUALITY, 90])
 
         overlay = image.copy()
-        contours, _ = cv2.findContours(drusen.astype(np.uint8), cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-        cv2.drawContours(overlay, contours, -1, (0, 255, 0), 2)
+        for mask, color in ((small, (0, 255, 255)), (large, (0, 255, 0))):
+            contours, _ = cv2.findContours(mask.astype(np.uint8), cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+            cv2.drawContours(overlay, contours, -1, color, 2)
         cv2.imwrite(os.path.join(output_dir, 'overlays', f'drusen_{date}.jpg'), overlay, [cv2.IMWRITE_JPEG_QUALITY, 90])
 
         area = int(np.count_nonzero(drusen))
-        summary.append({'date': date, 'nb_druses': len(contours), 'surface_px': area,
-                        'surface_pct_zone': round(100 * area / zone_area, 2)})
-        print(f"{date} : {len(contours)} druses, {100 * area / zone_area:.1f} % de la zone analysée")
+        count = cv2.connectedComponents(drusen.astype(np.uint8))[0] - 1
+        mean_density = float(density[zone].mean())
+        summary.append({'date': date, 'nb_druses': count, 'surface_px': area,
+                        'surface_pct_zone': round(100 * area / zone_area, 2),
+                        'surface_petites_pct_zone': round(100 * np.count_nonzero(small) / zone_area, 2),
+                        'densite_moyenne': round(mean_density, 5)})
+        print(f"{date} : {count} druses, {100 * area / zone_area:.1f} % de la zone analysée, densité {mean_density:.4f}")
 
     with open(os.path.join(output_dir, 'drusen_summary.csv'), 'w', newline='') as f:
-        writer = csv.DictWriter(f, fieldnames=['date', 'nb_druses', 'surface_px', 'surface_pct_zone'])
+        writer = csv.DictWriter(f, fieldnames=['date', 'nb_druses', 'surface_px', 'surface_pct_zone',
+                                               'surface_petites_pct_zone', 'densite_moyenne'])
         writer.writeheader()
         writer.writerows(summary)
     print(f"Résultats sauvegardés dans : {output_dir}")
@@ -188,6 +235,12 @@ if __name__ == '__main__':
     parser.add_argument('--min_area', type=int, default=40, help="Surface minimale d'une druse (px).")
     parser.add_argument('--max_elongation', type=float, default=4.0,
                         help="Allongement maximal (longueur / largeur) : au-delà, la détection est écartée.")
+    parser.add_argument('--fine_low', type=float, default=0.06, help="Seuil bas du détecteur de petites druses.")
+    parser.add_argument('--fine_high', type=float, default=0.10, help="Seuil haut du détecteur de petites druses.")
+    parser.add_argument('--fine_min_area', type=int, default=15, help="Surface minimale d'une petite druse (px).")
+    parser.add_argument('--density_sigma', type=float, default=40.0,
+                        help="Taille (px) de la fenêtre sur laquelle est mesurée la densité de druses fines.")
     args = parser.parse_args()
     detect_drusen(args.input_dir, args.masks_dir, args.output_dir, args.low, args.high, args.min_area,
-                  args.max_elongation, args.temporal_window)
+                  args.max_elongation, args.temporal_window, args.fine_low, args.fine_high, args.fine_min_area,
+                  args.density_sigma)
