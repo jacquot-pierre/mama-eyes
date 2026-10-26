@@ -140,7 +140,11 @@ lissée sur ~40 px), et on compare le **niveau du début** et le **niveau de la 
 - la baisse est nette : au moins `--min_drop` (0,008) et au moins `--min_relative_drop` (30 %)
   de la densité du début ;
 - la baisse dépasse `--min_significance` (3) fois le bruit de mesure (estimé à partir des variations
-  d'une date à l'autre).
+  d'une date à l'autre) ;
+- la **luminosité des druses** (score principal de `detect_drusen.py`, lissé à la même échelle que la
+  densité) baisse elle aussi d'au moins `--min_score_relative_drop` (20 %) de sa valeur de début.
+  La texture fine diminue en effet aussi quand de petites druses grossissent et fusionnent en plaques
+  plus lisses : la zone reste alors aussi claire (les druses sont toujours là), ce que ce critère écarte.
 
 La **date de disparition** est celle où la courbe, lissée par une médiane glissante sur
 `--smooth_window` dates (5), passe pour la dernière fois sous la mi-chemin entre le niveau du début
@@ -158,8 +162,9 @@ Sorties dans le dossier choisi :
 - `disappearance_by_year.csv` et `disappearance_by_year.png` : surface où les druses ont disparu,
   par année, en % de la zone analysée.
 
-Résultats sur la série actuelle : disparition sur 34 % de la zone analysée pour l'œil droit (pic en
-2021) et 25 % pour l'œil gauche (pics en 2021 et 2023), aucune hausse significative. Les zones
+Résultats sur la série actuelle : disparition sur 30 % de la zone analysée pour l'œil droit (pic en
+2021) et 17 % pour l'œil gauche (pic en 2023), aucune hausse significative. Les zones signalées
+comme faux positifs lors de la vérification visuelle sont écartées par le critère de luminosité. Les zones
 disparues sont continues et progressent vers l'extérieur au fil des années. Sur des points témoins,
 la date trouvée correspond à la disparition visible sur les photos.
 

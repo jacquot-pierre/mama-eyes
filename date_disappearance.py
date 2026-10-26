@@ -6,26 +6,30 @@ import csv
 import re
 from datetime import datetime
 
-# Même échelle que detect_drusen.py : densité = valeur du PNG / DENSITY_SCALE
+# Mêmes échelles que detect_drusen.py : valeur réelle = valeur du PNG / échelle
 DENSITY_SCALE = 4000
+SCORE_SCALE = 1000
 
-def load_density_series(density_dir, scale):
+def load_series(directory, scale, value_scale, blur_sigma=0.0):
     """
-    Charge les cartes de densité de toutes les dates, réduites d'un facteur `scale`
-    (la densité étant déjà lissée sur ~40 px, on ne perd pas d'information utile).
+    Charge les cartes (densité ou score) de toutes les dates, réduites d'un facteur `scale`,
+    éventuellement lissées (blur_sigma, en pixels de la carte réduite).
     Retourne les dates (datetime), la pile (dates, hauteur, largeur) et la taille d'origine.
     """
-    files = sorted(f for f in os.listdir(density_dir) if f.endswith('.png'))
+    files = sorted(f for f in os.listdir(directory) if f.endswith('.png'))
     dates, maps, full_size = [], [], None
     for f in files:
         match = re.search(r'(\d{4})_(\d{2})_(\d{2})', f)
         if not match:
             continue
-        image = cv2.imread(os.path.join(density_dir, f), cv2.IMREAD_GRAYSCALE)
+        image = cv2.imread(os.path.join(directory, f), cv2.IMREAD_GRAYSCALE)
         full_size = (image.shape[1], image.shape[0])
         small = cv2.resize(image, (full_size[0] // scale, full_size[1] // scale), interpolation=cv2.INTER_AREA)
+        small = small.astype(np.float32) / value_scale
+        if blur_sigma > 0:
+            small = cv2.GaussianBlur(small, (0, 0), blur_sigma)
         dates.append(datetime(int(match.group(1)), int(match.group(2)), int(match.group(3))))
-        maps.append(small.astype(np.float32) / DENSITY_SCALE)
+        maps.append(small)
     return dates, np.stack(maps), full_size
 
 def rolling_median(series, window):
@@ -145,9 +149,12 @@ def draw_bar_chart(rows, colors, path):
     cv2.imwrite(path, chart)
 
 def date_disappearance(drusen_dir, masks_dir, aligned_dir, output_dir, scale=8, edge_dates=8,
-                       smooth_window=5, min_drop=0.008, min_relative_drop=0.3, min_significance=3.0):
+                       smooth_window=5, min_drop=0.008, min_relative_drop=0.3, min_significance=3.0,
+                       min_score_relative_drop=0.2, min_score_level=0.02, score_sigma=40.0):
     os.makedirs(output_dir, exist_ok=True)
-    dates, series, full_size = load_density_series(os.path.join(drusen_dir, 'density'), scale)
+    dates, series, full_size = load_series(os.path.join(drusen_dir, 'density'), scale, DENSITY_SCALE)
+    # Score principal (luminosité des druses par rapport au fond), lissé à la même échelle que la densité
+    _, score_series, _ = load_series(os.path.join(drusen_dir, 'scores'), scale, SCORE_SCALE, score_sigma / scale)
     if len(dates) < 3 * edge_dates:
         print(f"Pas assez de dates ({len(dates)}) pour dater des disparitions.")
         return
@@ -161,9 +168,19 @@ def date_disappearance(drusen_dir, masks_dir, aligned_dir, output_dir, scale=8, 
     drop = start - end
     # La différence de deux moyennes de `edge_dates` dates a un bruit de noise × √(2 / edge_dates)
     significant = np.abs(drop) >= min_significance * np.maximum(noise, 1e-6) * np.sqrt(2 / edge_dates)
-    disappeared = significant & (drop >= min_drop) & (drop >= min_relative_drop * start)
+    texture_drop = significant & (drop >= min_drop) & (drop >= min_relative_drop * start)
+    # La texture fine baisse aussi quand de petites druses grossissent et fusionnent en plaques
+    # plus lisses : la zone reste alors aussi claire. On exige donc que la luminosité des druses
+    # (score principal) baisse elle aussi.
+    score_points = score_series[:, zone_small]
+    score_start = score_points[:edge_dates].mean(axis=0)
+    score_end = score_points[-edge_dates:].mean(axis=0)
+    brightness_drop = (score_start - score_end) >= min_score_relative_drop * np.maximum(score_start, min_score_level)
+    disappeared = texture_drop & brightness_drop
     appeared = significant & (-drop >= min_drop) & (-drop >= min_relative_drop * end)
-    print(f"{len(dates)} dates, disparition sur {disappeared.mean():.0%} de la zone, hausse sur {appeared.mean():.0%}")
+    print(f"{len(dates)} dates, disparition sur {disappeared.mean():.0%} de la zone "
+          f"(écartée car la luminosité ne baisse pas : {(texture_drop & ~brightness_drop).mean():.0%}), "
+          f"hausse sur {appeared.mean():.0%}")
 
     # Année de la disparition : date à laquelle le changement est constaté
     years = np.array([d.year for d in dates])
@@ -223,7 +240,12 @@ if __name__ == '__main__':
                         help="Baisse minimale, en fraction de la densité de début.")
     parser.add_argument('--min_significance', type=float, default=3.0,
                         help="La baisse doit dépasser ce multiple du bruit de mesure.")
+    parser.add_argument('--min_score_relative_drop', type=float, default=0.2,
+                        help="Baisse minimale de la luminosité des druses (score principal), en fraction de sa valeur de début.")
+    parser.add_argument('--min_score_level', type=float, default=0.02,
+                        help="Valeur plancher du score de début utilisée pour ce critère (évite les divisions par presque zéro).")
     args = parser.parse_args()
     date_disappearance(args.drusen_dir, args.masks_dir, args.aligned_dir, args.output_dir,
                        edge_dates=args.edge_dates, smooth_window=args.smooth_window, min_drop=args.min_drop,
-                       min_relative_drop=args.min_relative_drop, min_significance=args.min_significance)
+                       min_relative_drop=args.min_relative_drop, min_significance=args.min_significance,
+                       min_score_relative_drop=args.min_score_relative_drop, min_score_level=args.min_score_level)
