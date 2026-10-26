@@ -9,3 +9,4 @@ images_to_align
 analysis_results
 Retinos
 .venv
+__pycache__

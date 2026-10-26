@@ -41,8 +41,17 @@ poetry run python analyze_drusen.py --input_dir ./aligned_images/oeil_gauche --o
 ```
 
 
+# Alignement et découpage (`align_images.py`)
+Chaque photo est recalée sur la première (SIFT + homographie). D'une visite à l'autre, l'œil est
+décalé d'environ 250 px dans le cercle de l'appareil photo : une fois la rétine recalée, les disques
+photographiés ne se superposent donc plus. Toutes les images sont découpées avec le même cercle,
+le plus grand contenu dans la zone visible sur toutes les dates (rayon d'environ 715 px pour des
+photos de 3008×2000). Le disque reste ainsi un cercle parfait et identique d'une date à l'autre,
+au prix d'un peu de périphérie.
+
+
 # Uniformisation de la colorimétrie (`align_images.py`)
-L'alignement géométrique (SIFT + homographie vers la première image) est identique quel que soit le mode.
+L'alignement géométrique est identique quel que soit le mode.
 La colorimétrie peut être traitée de deux façons, choisies avec `--color_mode` :
 
 - `reference` (par défaut) : les images étant superposables pixel à pixel, on construit une image de

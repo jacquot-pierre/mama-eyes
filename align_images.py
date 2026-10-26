@@ -59,6 +59,24 @@ def apply_clahe(image, mask):
     final_image = cv2.cvtColor(lab_clahe, cv2.COLOR_LAB2BGR)
     return cv2.bitwise_and(final_image, final_image, mask=mask)
 
+def common_circle_mask(valid_masks):
+    """
+    D'une visite à l'autre, l'œil est décalé dans le cercle de l'appareil photo : une fois
+    la rétine recalée, les disques photographiés ne se superposent plus. Découper toutes
+    les images avec le disque d'une seule photo produirait alors des formes en lentille
+    (impression d'ellipse) différentes à chaque date.
+    On utilise donc le plus grand cercle contenu dans la zone visible sur toutes les dates.
+    """
+    common = valid_masks[0].copy()
+    for mask in valid_masks[1:]:
+        common = cv2.bitwise_and(common, mask)
+    distance = cv2.distanceTransform((common > 0).astype(np.uint8), cv2.DIST_L2, 5)
+    _, radius, _, center = cv2.minMaxLoc(distance)
+    print(f"Cercle commun à toutes les dates : centre {center}, rayon {int(radius)} px")
+    circle_mask = np.zeros_like(common)
+    cv2.circle(circle_mask, center, int(radius), 255, -1)
+    return circle_mask
+
 def masked_blur(image, mask, sigma):
     """
     Flou gaussien normalisé par le masque : les pixels hors masque (fond noir,
@@ -250,11 +268,6 @@ def align_images(input_dir, output_dir, color_mode='reference', illum_degree=3, 
         print("Impossible de trouver des descripteurs dans l'image de référence géométrique.")
         return
 
-    # Utiliser le masque de la première image comme standard pour toutes
-    ref_center, ref_radius = find_retina_circle(im_ref_geom)
-    standard_mask = np.zeros(im_ref_geom.shape[:2], dtype="uint8")
-    cv2.circle(standard_mask, ref_center, ref_radius, 255, -1)
-
     # --- PASSE 2: Traitement de chaque image ---
     print("\n--- Passe 2/2: Alignement et normalisation de chaque image...")
     filenames, aligned_images, valid_masks = [], [], []
@@ -295,7 +308,10 @@ def align_images(input_dir, output_dir, color_mode='reference', illum_degree=3, 
 
         filenames.append(filename)
         aligned_images.append(im_aligned)
-        valid_masks.append(cv2.bitwise_and(valid_mask, standard_mask))
+        valid_masks.append(valid_mask)
+
+    # Masque final commun : un cercle parfait, identique pour toutes les dates
+    common_mask = common_circle_mask(valid_masks)
 
     # 3. Uniformisation de la colorimétrie par rapport à la référence temporelle
     if color_mode == 'reference':
@@ -305,9 +321,9 @@ def align_images(input_dir, output_dir, color_mode='reference', illum_degree=3, 
     # 4. Masquage, finition CLAHE éventuelle et sauvegarde
     for filename, im_aligned in zip(filenames, aligned_images):
         if clahe:
-            final_image = apply_clahe(im_aligned, standard_mask)
+            final_image = apply_clahe(im_aligned, common_mask)
         else:
-            final_image = cv2.bitwise_and(im_aligned, im_aligned, mask=standard_mask)
+            final_image = cv2.bitwise_and(im_aligned, im_aligned, mask=common_mask)
 
         output_path = os.path.join(output_dir, f"aligned_{filename}")
         cv2.imwrite(output_path, final_image)
