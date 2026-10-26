@@ -64,12 +64,16 @@ La colorimétrie peut être traitée de deux façons, choisies avec `--color_mod
   de l'ajustement. L'image est ensuite divisée par cette surface. Cela supprime les ombres, le
   vignettage et les dominantes de couleur propres à une prise de vue, tout en conservant les
   évolutions localisées de la rétine.
+  Enfin, l'amplitude des détails fins (druses, vaisseaux, texture) est harmonisée d'une date à l'autre :
+  elle est mesurée uniquement sur les zones stables dans le temps, puis chaque image est ramenée à
+  l'amplitude médiane de la série (photos plus « dures » ou plus « douces »).
 - `global` : ancienne méthode, transfert de couleur vers la moyenne/écart-type globaux (Reinhard)
   puis CLAHE sur chaque image.
 
 Options utiles :
 - `--illum_degree 3` : degré de la surface polynomiale. Plus élevé, elle corrige des ombres plus
   complexes mais risque d'atténuer de vraies évolutions ; 2 est plus prudent.
+- `--no_contrast_norm` : désactive l'harmonisation de l'amplitude des détails.
 - `--hist_match` : ajoute un histogram matching final vers l'histogramme commun de toutes les images.
   Déconseillé pour le suivi : en imposant la même distribution de couleurs à toutes les dates, il
   éclaircit les zones d'atrophie qui s'étendent.
@@ -80,5 +84,11 @@ Pourquoi pas un simple flou pour estimer l'éclairage ? Un flou gaussien (même 
 comme « éclairage » toute variation plus grande que sa taille, y compris les plaques d'atrophie :
 elles étaient gommées. Une surface polynomiale robuste ne peut pas reproduire une lésion localisée.
 
-Mémoire : toutes les images d'un œil sont gardées en mémoire (environ 4,5 Go de pic pour 105 photos
+Mémoire : toutes les images d'un œil sont gardées en mémoire (environ 4,7 Go de pic pour 103 photos
 de 3008×2000).
+
+Précision obtenue sur la série actuelle (103 photos par œil) :
+- recalage, mesuré sur les vaisseaux : décalage typique 0,6 px, au pire environ 3 px ;
+- couleur : écart moyen d'une image à ses deux voisines dans le temps inférieur à 1 niveau sur 255
+  en luminance. Les écarts restants viennent surtout de différences propres à certaines photos
+  (mise au point, flash), qu'on ne corrige pas pour ne pas modifier le contenu de la rétine.

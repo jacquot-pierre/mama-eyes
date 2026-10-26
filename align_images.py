@@ -147,7 +147,46 @@ def fit_smooth_field(values, mask, degree, iterations=6, outlier_k=2.5):
 
     return polynomial_basis(xx, yy, degree) @ coeffs
 
-def normalize_to_reference(aligned_images, valid_masks, illum_degree, hist_match):
+def normalize_detail_contrast(aligned_images, valid_masks, detail_sigma=40.0, stable_quantile=0.4):
+    """
+    Harmonise l'amplitude des détails fins (druses, vaisseaux, texture) d'une date à l'autre :
+    certaines photos sont plus « dures », d'autres plus « douces » ou un peu moins nettes.
+      - chaque image est séparée en un fond lisse (déjà harmonisé) et des détails ;
+      - l'amplitude des détails est mesurée uniquement sur les zones stables dans le temps
+        (les zones qui évoluent, comme l'atrophie ou les druses qui disparaissent, sont exclues) ;
+      - les détails de chaque image sont mis à l'échelle vers l'amplitude médiane de la série.
+    Les images sont modifiées en place.
+    """
+    height, width = aligned_images[0].shape[:2]
+    small_size = (width // ILLUM_DOWNSCALE, height // ILLUM_DOWNSCALE)
+    sigma_small = detail_sigma / ILLUM_DOWNSCALE
+
+    smalls = np.empty((len(aligned_images), small_size[1], small_size[0], 3), dtype=np.float32)
+    backgrounds = []
+    common = np.ones((small_size[1], small_size[0]), dtype=bool)
+    for i, (image, mask) in enumerate(zip(aligned_images, valid_masks)):
+        smalls[i] = cv2.resize(image, small_size, interpolation=cv2.INTER_AREA)
+        small_mask = cv2.resize(mask, small_size, interpolation=cv2.INTER_NEAREST)
+        backgrounds.append(masked_blur(smalls[i], small_mask, sigma_small))
+        common &= small_mask > 0
+
+    # Zones stables : visibles sur toutes les dates et qui varient peu dans le temps
+    common = cv2.erode(common.astype(np.uint8), np.ones((15, 15), np.uint8)) > 0
+    lightly_blurred = np.stack([cv2.GaussianBlur(s, (0, 0), 2.0).mean(axis=-1) for s in smalls])
+    temporal_mad = np.median(np.abs(lightly_blurred - np.median(lightly_blurred, axis=0)), axis=0)
+    stable = common & (temporal_mad <= np.quantile(temporal_mad[common], stable_quantile))
+
+    amplitudes = np.array([[np.std((s - b)[..., c][stable]) for c in range(3)] for s, b in zip(smalls, backgrounds)])
+    target = np.median(amplitudes, axis=0)
+    del smalls
+
+    for i, (image, background) in enumerate(zip(aligned_images, backgrounds)):
+        scale = np.clip(target / np.maximum(amplitudes[i], 1e-3), 0.7, 1.4).astype(np.float32)
+        background_full = cv2.resize(background, (width, height), interpolation=cv2.INTER_LINEAR)
+        image_f = image.astype(np.float32)
+        aligned_images[i] = np.clip(background_full + (image_f - background_full) * scale, 0, 255).astype(np.uint8)
+
+def normalize_to_reference(aligned_images, valid_masks, illum_degree, hist_match, contrast_norm=True):
     """
     Uniformise l'éclairage de toutes les images en s'appuyant sur le fait qu'elles
     sont superposables pixel à pixel :
@@ -158,7 +197,8 @@ def normalize_to_reference(aligned_images, valid_masks, illum_degree, hist_match
       3. l'image est divisée par cette surface : les ombres, le vignettage et les
          dominantes de couleur propres à la prise de vue disparaissent, tandis que
          les changements localisés de la rétine sont conservés ;
-      4. (optionnel) histogram matching Lab vers l'histogramme cumulé de toutes les images.
+      4. (optionnel) l'amplitude des détails fins est harmonisée (voir normalize_detail_contrast) ;
+      5. (optionnel) histogram matching Lab vers l'histogramme cumulé de toutes les images.
     Les images sont modifiées en place.
     """
     height, width = aligned_images[0].shape[:2]
@@ -186,6 +226,11 @@ def normalize_to_reference(aligned_images, valid_masks, illum_degree, hist_match
         gain = np.clip(np.exp(-field), 0.25, 4.0).astype(np.float32)
         gain = cv2.resize(gain, (width, height), interpolation=cv2.INTER_LINEAR)
         aligned_images[i] = np.clip(image.astype(np.float32) * gain, 0, 255).astype(np.uint8)
+    del smalls
+
+    if contrast_norm:
+        print("  -> Harmonisation du contraste des détails sur les zones stables...")
+        normalize_detail_contrast(aligned_images, valid_masks)
 
     if hist_match:
         print("  -> Histogram matching vers l'histogramme commun...")
@@ -199,7 +244,8 @@ def normalize_to_reference(aligned_images, valid_masks, illum_degree, hist_match
         for i, (image, mask) in enumerate(zip(aligned_images, valid_masks)):
             aligned_images[i] = match_histograms_lab(image, mask, target_cdfs)
 
-def align_images(input_dir, output_dir, color_mode='reference', illum_degree=3, hist_match=False, clahe=None):
+def align_images(input_dir, output_dir, color_mode='reference', illum_degree=3, hist_match=False, clahe=None,
+                 contrast_norm=True):
     """
     Aligne et normalise les images.
     color_mode = 'global'    : transfert de couleur vers la moyenne globale + CLAHE (ancienne méthode)
@@ -317,7 +363,7 @@ def align_images(input_dir, output_dir, color_mode='reference', illum_degree=3, 
     # 3. Uniformisation de la colorimétrie par rapport à la référence temporelle
     if color_mode == 'reference':
         print("\n--- Uniformisation de la colorimétrie (référence médiane)...")
-        normalize_to_reference(aligned_images, valid_masks, illum_degree, hist_match)
+        normalize_to_reference(aligned_images, valid_masks, illum_degree, hist_match, contrast_norm)
 
     # 4. Masquage, finition CLAHE éventuelle et sauvegarde
     for filename, im_aligned in zip(filenames, aligned_images):
@@ -343,9 +389,11 @@ if __name__ == '__main__':
     parser.add_argument('--hist_match', action='store_true',
                         help="Active un histogram matching final en mode 'reference'. Déconseillé pour le suivi : "
                              "il impose la même distribution de couleurs à toutes les dates et atténue l'atrophie.")
+    parser.add_argument('--no_contrast_norm', action='store_true',
+                        help="Désactive l'harmonisation de l'amplitude des détails en mode 'reference'.")
     parser.add_argument('--clahe', action=argparse.BooleanOptionalAction, default=None,
                         help="Force (--clahe) ou désactive (--no-clahe) le CLAHE final. "
                              "Par défaut : actif en mode 'global', inactif en mode 'reference'.")
     args = parser.parse_args()
     align_images(args.input_dir, args.output_dir, args.color_mode, args.illum_degree,
-                 args.hist_match, args.clahe)
+                 args.hist_match, args.clahe, not args.no_contrast_norm)
