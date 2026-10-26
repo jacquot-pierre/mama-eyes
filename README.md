@@ -35,10 +35,34 @@ poetry run python create_video.py --input_dir ./aligned_images/oeil_droit --outp
 
 poetry run python create_video.py --input_dir ./aligned_images/oeil_gauche --output_file ./oeil_gauche.mp4
 
+poetry run python build_masks.py --input_dir ./aligned_images/oeil_droit --output_dir ./masks/oeil_droit
+
+poetry run python build_masks.py --input_dir ./aligned_images/oeil_gauche --output_dir ./masks/oeil_gauche
+
 poetry run python analyze_drusen.py --input_dir ./aligned_images/oeil_droit --output_dir ./analysis_results/oeil_droit --threshold 25
 
 poetry run python analyze_drusen.py --input_dir ./aligned_images/oeil_gauche --output_dir ./analysis_results/oeil_gauche --threshold 25
 ```
+
+
+# Calques d'exclusion (`build_masks.py`)
+Préparation de la détection des druses : certaines structures sont souvent prises à tort pour
+des druses (ou cachent leur évolution) et doivent être exclues de l'analyse. Les images alignées
+étant superposables au pixel près, les calques sont calculés une seule fois sur l'image médiane
+de toutes les dates (nette et sans défaut propre à une photo), puis valent pour toute la série.
+
+- **Vaisseaux** : structures sombres et fines dans le canal vert, mais presque invisibles dans le
+  canal rouge (les vaisseaux sont rouges). Ce critère évite de confondre les vaisseaux avec les
+  espaces sombres entre druses voisines, qui eux sont sombres dans les deux canaux.
+- **Papille** : disque le plus clair par rapport à son entourage, cherché dans le canal rouge après
+  effacement des vaisseaux qui la traversent.
+- **Fovéa** : point le plus sombre de la macula, à environ 2,5 diamètres papillaires de la papille.
+  Seul le petit centre fovéal est masqué : la macula, où se trouvent la plupart des druses, reste analysée.
+- **Bord** : fine couronne au bord du disque rétinien.
+
+Le dossier de sortie contient `reference.png` (image médiane), un PNG par calque, `analysis_zone.png`
+(rétine moins tous les calques) et `control.jpg`, la référence avec les calques en couleur pour
+vérifier le résultat à l'œil. Options : `--vessel_margin`, `--disc_margin`, `--fovea_ratio`, `--border_width`.
 
 
 # Alignement et découpage (`align_images.py`)
