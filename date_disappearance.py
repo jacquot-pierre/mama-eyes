@@ -210,6 +210,14 @@ def date_disappearance(drusen_dir, masks_dir, aligned_dir, output_dir, scale=8, 
     cv2.imwrite(os.path.join(output_dir, 'disappearance_year.png'),
                 np.where(year_map > 0, year_map - 2000, 0).astype(np.uint8))
 
+    # Date exacte de la disparition, en jours depuis le 1er janvier 2000 (PNG 16 bits, 0 = aucune)
+    days = np.array([(d - datetime(2000, 1, 1)).days for d in dates])
+    day_small = np.zeros(small_size[::-1], dtype=np.uint16)
+    day_small[zone_small] = np.where(disappeared, days[k], 0)
+    day_map = cv2.resize(day_small, full_size, interpolation=cv2.INTER_NEAREST)
+    day_map[~zone_full] = 0
+    cv2.imwrite(os.path.join(output_dir, 'disappearance_day.png'), day_map)
+
     # Bilan par année
     zone_area = np.count_nonzero(zone_small)
     rows = []

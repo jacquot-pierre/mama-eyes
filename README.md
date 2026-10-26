@@ -51,6 +51,12 @@ poetry run python date_disappearance.py --drusen_dir ./drusen/oeil_droit --masks
 
 poetry run python date_disappearance.py --drusen_dir ./drusen/oeil_gauche --masks_dir ./masks/oeil_gauche --aligned_dir ./aligned_images/oeil_gauche --output_dir ./disappearance/oeil_gauche
 
+poetry run python render_frames.py --aligned_dir ./aligned_images/oeil_droit --masks_dir ./masks/oeil_droit --drusen_dir ./drusen/oeil_droit --disappearance_dir ./disappearance/oeil_droit --output_dir ./frames/oeil_droit
+
+poetry run python create_video.py --input_dir ./frames/oeil_droit/druses --output_file ./druses_oeil_droit.mp4
+
+poetry run python create_video.py --input_dir ./frames/oeil_droit/disparitions --output_file ./disparitions_oeil_droit.mp4
+
 poetry run python analyze_drusen.py --input_dir ./aligned_images/oeil_droit --output_dir ./analysis_results/oeil_droit --threshold 25
 
 poetry run python analyze_drusen.py --input_dir ./aligned_images/oeil_gauche --output_dir ./analysis_results/oeil_gauche --threshold 25
@@ -159,6 +165,8 @@ Sorties dans le dossier choisi :
 - `disappearance_check.jpg` : image de vérification, avec côte à côte la première photo, la dernière
   photo (contours des zones tracés sur les deux, couleur de l'année de disparition) et la carte ;
 - `disappearance_year.png` : année de disparition par pixel (valeur = année − 2000, 0 = aucune) ;
+- `disappearance_day.png` : date exacte de disparition par pixel, en jours depuis le 1er janvier 2000
+  (PNG 16 bits, 0 = aucune) ;
 - `disappearance_by_year.csv` et `disappearance_by_year.png` : surface où les druses ont disparu,
   par année, en % de la zone analysée.
 
@@ -167,6 +175,16 @@ Résultats sur la série actuelle : disparition sur 30 % de la zone analysée po
 comme faux positifs lors de la vérification visuelle sont écartées par le critère de luminosité. Les zones
 disparues sont continues et progressent vers l'extérieur au fil des années. Sur des points témoins,
 la date trouvée correspond à la disparition visible sur les photos.
+
+
+# Vidéos des druses et des disparitions (`render_frames.py`)
+Prépare les images de deux vidéos, à assembler ensuite avec `create_video.py` (la date et la frise
+chronologique sont ajoutées par ce dernier). Chaque image montre la photo à gauche et, à droite :
+- `druses/` (avec `--drusen_dir`) : la même photo avec les druses détectées en teinte cyan. Pour une
+  vidéo lisible, une druse n'est affichée que si elle est détectée sur la majorité des `--window`
+  dates qui l'entourent (5), et les taches de moins de `--min_area` px (40) sont retirées ;
+- `disparitions/` (avec `--disappearance_dir`) : la même photo où chaque zone se colore, avec la
+  couleur de son année, à partir de la date exacte où ses druses ont disparu.
 
 
 # Alignement et découpage (`align_images.py`)
