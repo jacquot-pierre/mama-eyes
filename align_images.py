@@ -3,6 +3,9 @@ import numpy as np
 import os
 import argparse
 
+# Facteur de réduction utilisé pour estimer les champs d'éclairage (basse fréquence)
+ILLUM_DOWNSCALE = 4
+
 def find_retina_circle(image):
     """
     Trouve le cercle principal de la rétine dans une image avec une méthode plus robuste.
@@ -43,10 +46,149 @@ def color_transfer_to_target(source_image, source_mask, target_stats):
     bgr_normalized = cv2.cvtColor(lab_normalized, cv2.COLOR_LAB2BGR)
     return bgr_normalized
 
-def align_images(input_dir, output_dir):
+def apply_clahe(image, mask):
     """
-    Aligne et normalise les images en utilisant une moyenne de couleur globale.
+    Applique un CLAHE sur la luminance (canal L) puis remasque l'image.
     """
+    im_masked = cv2.bitwise_and(image, image, mask=mask)
+    lab = cv2.cvtColor(im_masked, cv2.COLOR_BGR2LAB)
+    l, a, b = cv2.split(lab)
+    clahe_final = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8, 8))
+    l_clahe = clahe_final.apply(l)
+    lab_clahe = cv2.merge((l_clahe, a, b))
+    final_image = cv2.cvtColor(lab_clahe, cv2.COLOR_LAB2BGR)
+    return cv2.bitwise_and(final_image, final_image, mask=mask)
+
+def masked_blur(image, mask, sigma):
+    """
+    Flou gaussien normalisé par le masque : les pixels hors masque (fond noir,
+    coins vides après recalage) ne tirent pas la moyenne vers le noir.
+    """
+    m = (mask > 0).astype(np.float32)
+    num = cv2.GaussianBlur(image * m[..., None], (0, 0), sigma)
+    den = cv2.GaussianBlur(m, (0, 0), sigma)
+    return num / np.maximum(den, 1e-3)[..., None]
+
+def match_histograms_lab(image, mask, target_cdfs):
+    """
+    Fait correspondre l'histogramme de chaque canal Lab (dans le masque) aux CDF cibles.
+    """
+    lab = cv2.cvtColor(image, cv2.COLOR_BGR2LAB)
+    channels = list(cv2.split(lab))
+    for c in range(3):
+        hist = cv2.calcHist([channels[c]], [0], mask, [256], [0, 256]).ravel()
+        cdf = np.cumsum(hist) / max(hist.sum(), 1)
+        lut = np.interp(cdf, target_cdfs[c], np.arange(256))
+        channels[c] = cv2.LUT(channels[c], np.clip(lut, 0, 255).astype(np.uint8))
+    return cv2.cvtColor(cv2.merge(channels), cv2.COLOR_LAB2BGR)
+
+def median_ignoring_nan(stack):
+    """
+    Médiane le long de l'axe 0 en ignorant les NaN, sans la surconsommation
+    mémoire de np.nanmedian (les NaN sont rangés en fin de tri par np.sort).
+    """
+    sorted_stack = np.sort(stack, axis=0)
+    counts = np.sum(~np.isnan(stack), axis=0)
+    low = np.take_along_axis(sorted_stack, np.maximum((counts - 1) // 2, 0)[None], axis=0)[0]
+    high = np.take_along_axis(sorted_stack, np.maximum(counts // 2, 0)[None], axis=0)[0]
+    median = (low + high) / 2
+    median[counts == 0] = np.nan
+    return median
+
+def polynomial_basis(xs, ys, degree):
+    """Monômes x^i * y^j (i + j <= degree) évalués aux coordonnées données."""
+    return np.stack([xs ** i * ys ** j for i in range(degree + 1) for j in range(degree + 1 - i)], axis=-1)
+
+def fit_smooth_field(values, mask, degree, iterations=6, outlier_k=2.5):
+    """
+    Ajuste de façon robuste une surface polynomiale lisse sur une carte 2D
+    (un canal du log-ratio image / référence). À chaque itération, les pixels dont
+    l'écart à la surface dépasse outlier_k écarts-types robustes (MAD) sont exclus :
+    les lésions qui évoluent réellement n'influencent donc pas la correction.
+    Retourne la surface évaluée sur toute la carte.
+    """
+    h, w = values.shape
+    yy, xx = np.mgrid[0:h, 0:w].astype(np.float32)
+    xx = (xx - w / 2) / (w / 2)
+    yy = (yy - h / 2) / (h / 2)
+
+    # Sous-échantillonnage des points de la rétine pour accélérer l'ajustement
+    points = np.zeros_like(mask, dtype=bool)
+    points[::3, ::3] = True
+    points &= (mask > 0) & np.isfinite(values)
+    basis = polynomial_basis(xx[points], yy[points], degree)
+    target = values[points]
+
+    keep = np.ones(len(target), dtype=bool)
+    for _ in range(iterations):
+        coeffs, *_ = np.linalg.lstsq(basis[keep], target[keep], rcond=None)
+        residuals = target - basis @ coeffs
+        mad = np.median(np.abs(residuals[keep] - np.median(residuals[keep]))) * 1.4826
+        keep = np.abs(residuals) < outlier_k * max(mad, 1e-4)
+
+    return polynomial_basis(xx, yy, degree) @ coeffs
+
+def normalize_to_reference(aligned_images, valid_masks, illum_degree, hist_match):
+    """
+    Uniformise l'éclairage de toutes les images en s'appuyant sur le fait qu'elles
+    sont superposables pixel à pixel :
+      1. image de référence = médiane pixel par pixel de toutes les dates (version réduite) ;
+      2. pour chaque image et chaque canal, le rapport image / référence est modélisé
+         par une surface polynomiale lisse, ajustée en ignorant les zones qui diffèrent
+         réellement (lésions, atrophie) ;
+      3. l'image est divisée par cette surface : les ombres, le vignettage et les
+         dominantes de couleur propres à la prise de vue disparaissent, tandis que
+         les changements localisés de la rétine sont conservés ;
+      4. (optionnel) histogram matching Lab vers l'histogramme cumulé de toutes les images.
+    Les images sont modifiées en place.
+    """
+    height, width = aligned_images[0].shape[:2]
+    small_size = (width // ILLUM_DOWNSCALE, height // ILLUM_DOWNSCALE)
+
+    print("  -> Réduction des images...")
+    smalls = np.full((len(aligned_images), small_size[1], small_size[0], 3), np.nan, dtype=np.float32)
+    small_masks = []
+    for i, (image, mask) in enumerate(zip(aligned_images, valid_masks)):
+        small = cv2.resize(image, small_size, interpolation=cv2.INTER_AREA).astype(np.float32)
+        small_mask = cv2.resize(mask, small_size, interpolation=cv2.INTER_NEAREST)
+        small = masked_blur(small, small_mask, 2.0)  # léger débruitage
+        smalls[i][small_mask > 0] = small[small_mask > 0]
+        small_masks.append(small_mask)
+
+    print("  -> Calcul de l'image de référence (médiane temporelle)...")
+    reference = median_ignoring_nan(smalls)
+
+    print("  -> Correction de l'éclairage de chaque image...")
+    log_reference = np.log(np.maximum(reference, 1.0))
+    for i, (image, small_mask) in enumerate(zip(aligned_images, small_masks)):
+        log_ratio = np.log(np.maximum(smalls[i], 1.0)) - log_reference
+        fit_mask = ((small_mask > 0) & np.isfinite(log_ratio).all(axis=-1)).astype(np.uint8)
+        field = np.stack([fit_smooth_field(log_ratio[..., c], fit_mask, illum_degree) for c in range(3)], axis=-1)
+        gain = np.clip(np.exp(-field), 0.25, 4.0).astype(np.float32)
+        gain = cv2.resize(gain, (width, height), interpolation=cv2.INTER_LINEAR)
+        aligned_images[i] = np.clip(image.astype(np.float32) * gain, 0, 255).astype(np.uint8)
+
+    if hist_match:
+        print("  -> Histogram matching vers l'histogramme commun...")
+        total_hists = np.zeros((3, 256), dtype=np.float64)
+        for image, mask in zip(aligned_images, valid_masks):
+            lab = cv2.cvtColor(image, cv2.COLOR_BGR2LAB)
+            for c in range(3):
+                hist = cv2.calcHist([lab], [c], mask, [256], [0, 256]).ravel()
+                total_hists[c] += hist / max(hist.sum(), 1)
+        target_cdfs = [np.cumsum(h) / h.sum() for h in total_hists]
+        for i, (image, mask) in enumerate(zip(aligned_images, valid_masks)):
+            aligned_images[i] = match_histograms_lab(image, mask, target_cdfs)
+
+def align_images(input_dir, output_dir, color_mode='reference', illum_degree=3, hist_match=False, clahe=None):
+    """
+    Aligne et normalise les images.
+    color_mode = 'global'    : transfert de couleur vers la moyenne globale + CLAHE (ancienne méthode)
+    color_mode = 'reference' : correction locale de l'éclairage vers une référence médiane
+    """
+    if clahe is None:
+        clahe = color_mode == 'global'
+
     os.makedirs(output_dir, exist_ok=True)
     try:
         all_image_files = sorted([f for f in os.listdir(input_dir) if f.lower().endswith(('.png', '.jpg', '.jpeg'))])
@@ -66,13 +208,13 @@ def align_images(input_dir, output_dir):
 
         center, radius = find_retina_circle(image)
         if center is None: continue
-        
+
         mask = np.zeros(image.shape[:2], dtype="uint8")
         cv2.circle(mask, center, radius, 255, -1)
 
         lab = cv2.cvtColor(image, cv2.COLOR_BGR2LAB)
         l, a, b = cv2.split(lab)
-        
+
         l_mean, l_std = cv2.meanStdDev(l, mask=mask)
         a_mean, a_std = cv2.meanStdDev(a, mask=mask)
         b_mean, b_std = cv2.meanStdDev(b, mask=mask)
@@ -115,12 +257,14 @@ def align_images(input_dir, output_dir):
 
     # --- PASSE 2: Traitement de chaque image ---
     print("\n--- Passe 2/2: Alignement et normalisation de chaque image...")
+    filenames, aligned_images, valid_masks = [], [], []
     for filename in all_image_files:
         print(f"\nTraitement de l'image : {filename}...")
         im_to_process = cv2.imread(os.path.join(input_dir, filename))
         if im_to_process is None: continue
 
         # 1. Normalisation de la couleur vers la moyenne globale
+        #    (sert toujours au calcul de l'alignement, quel que soit le mode)
         center, radius = find_retina_circle(im_to_process)
         if center is None: continue
         process_mask = np.zeros(im_to_process.shape[:2], dtype="uint8")
@@ -137,25 +281,34 @@ def align_images(input_dir, output_dir):
         matches = bf.knnMatch(des1, des2, k=2)
         good_matches = [m for m, n in matches if m.distance < 0.75 * n.distance]
 
-        im_aligned = im_color_corrected # Garder l'image si l'alignement échoue
+        # En mode 'reference', on recale l'image d'origine : la couleur est corrigée après
+        im_source = im_color_corrected if color_mode == 'global' else im_to_process
+        im_aligned = im_source # Garder l'image si l'alignement échoue
+        valid_mask = process_mask
         if len(good_matches) > 10:
             src_pts = np.float32([kp1[m.queryIdx].pt for m in good_matches]).reshape(-1, 1, 2)
             dst_pts = np.float32([kp2[m.trainIdx].pt for m in good_matches]).reshape(-1, 1, 2)
             M, _ = cv2.findHomography(dst_pts, src_pts, cv2.RANSAC, 5.0)
             if M is not None:
-                im_aligned = cv2.warpPerspective(im_color_corrected, M, (width, height))
+                im_aligned = cv2.warpPerspective(im_source, M, (width, height))
+                valid_mask = cv2.warpPerspective(process_mask, M, (width, height), flags=cv2.INTER_NEAREST)
 
-        # 3. Masquage et finition CLAHE
-        im_masked = cv2.bitwise_and(im_aligned, im_aligned, mask=standard_mask)
-        lab = cv2.cvtColor(im_masked, cv2.COLOR_BGR2LAB)
-        l, a, b = cv2.split(lab)
-        clahe_final = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8, 8))
-        l_clahe = clahe_final.apply(l)
-        lab_clahe = cv2.merge((l_clahe, a, b))
-        final_image = cv2.cvtColor(lab_clahe, cv2.COLOR_LAB2BGR)
-        final_image = cv2.bitwise_and(final_image, final_image, mask=standard_mask)
+        filenames.append(filename)
+        aligned_images.append(im_aligned)
+        valid_masks.append(cv2.bitwise_and(valid_mask, standard_mask))
 
-        # 4. Sauvegarde
+    # 3. Uniformisation de la colorimétrie par rapport à la référence temporelle
+    if color_mode == 'reference':
+        print("\n--- Uniformisation de la colorimétrie (référence médiane)...")
+        normalize_to_reference(aligned_images, valid_masks, illum_degree, hist_match)
+
+    # 4. Masquage, finition CLAHE éventuelle et sauvegarde
+    for filename, im_aligned in zip(filenames, aligned_images):
+        if clahe:
+            final_image = apply_clahe(im_aligned, standard_mask)
+        else:
+            final_image = cv2.bitwise_and(im_aligned, im_aligned, mask=standard_mask)
+
         output_path = os.path.join(output_dir, f"aligned_{filename}")
         cv2.imwrite(output_path, final_image)
         print(f"  -> Image sauvegardée : {output_path}")
@@ -164,5 +317,18 @@ if __name__ == '__main__':
     parser = argparse.ArgumentParser(description="Script pour aligner et normaliser des images de rétine.")
     parser.add_argument('--input_dir', type=str, required=True, help="Dossier contenant les images à aligner.")
     parser.add_argument('--output_dir', type=str, required=True, help="Dossier où sauvegarder les images alignées.")
+    parser.add_argument('--color_mode', choices=['reference', 'global'], default='reference',
+                        help="'reference' (défaut) : correction locale de l'éclairage vers la médiane de toutes les dates. "
+                             "'global' : ancienne méthode (moyenne globale + CLAHE).")
+    parser.add_argument('--illum_degree', type=int, default=3,
+                        help="Degré de la surface polynomiale modélisant l'éclairage en mode 'reference' (défaut : 3). "
+                             "Plus élevé = corrige des ombres plus complexes, mais risque d'atténuer de vraies évolutions.")
+    parser.add_argument('--hist_match', action='store_true',
+                        help="Active un histogram matching final en mode 'reference'. Déconseillé pour le suivi : "
+                             "il impose la même distribution de couleurs à toutes les dates et atténue l'atrophie.")
+    parser.add_argument('--clahe', action=argparse.BooleanOptionalAction, default=None,
+                        help="Force (--clahe) ou désactive (--no-clahe) le CLAHE final. "
+                             "Par défaut : actif en mode 'global', inactif en mode 'reference'.")
     args = parser.parse_args()
-    align_images(args.input_dir, args.output_dir)
+    align_images(args.input_dir, args.output_dir, args.color_mode, args.illum_degree,
+                 args.hist_match, args.clahe)

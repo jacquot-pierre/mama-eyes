@@ -1,5 +1,11 @@
 *.mp4
 *.jpg
-aligned_images
+*.JPG
+*.jpeg
+*.png
+*.zip
+aligned_images*
 images_to_align
+analysis_results
+Retinos
 .venv
