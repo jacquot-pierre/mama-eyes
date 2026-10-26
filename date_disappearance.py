@@ -83,6 +83,45 @@ def draw_map(background, year_map, appeared, colors, title):
     cv2.putText(legend, "hausse", (x + 50, 102), cv2.FONT_HERSHEY_SIMPLEX, 1.1, (255, 255, 255), 2)
     return np.vstack([result, legend])
 
+def draw_check_image(first, last, year_map, appeared, colors, retina, first_date, last_date):
+    """
+    Image de vérification : première photo, dernière photo et carte des disparitions,
+    côte à côte et recadrées sur la rétine. Les contours des zones (couleur de l'année
+    de disparition) sont aussi tracés sur les deux photos, pour juger si les druses
+    présentes au début ont bien disparu à la fin.
+    """
+    ys, xs = np.nonzero(retina)
+    y0, y1, x0, x1 = ys.min(), ys.max() + 1, xs.min(), xs.max() + 1
+
+    def with_outlines(image):
+        result = image.copy()
+        for year, color in colors.items():
+            contours, _ = cv2.findContours((year_map == year).astype(np.uint8), cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+            cv2.drawContours(result, contours, -1, color, 4)
+        contours, _ = cv2.findContours(appeared.astype(np.uint8), cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+        cv2.drawContours(result, contours, -1, (255, 255, 255), 4)
+        return result
+
+    panels = []
+    titles = (f"Premiere photo : {first_date:%Y-%m-%d}", f"Derniere photo : {last_date:%Y-%m-%d}",
+              "Annee de disparition des druses")
+    filled = draw_map(last, year_map, appeared, colors, "")[:last.shape[0]]
+    for image, title in zip((with_outlines(first), with_outlines(last), filled), titles):
+        panel = image[y0:y1, x0:x1].copy()
+        cv2.putText(panel, title, (30, 70), cv2.FONT_HERSHEY_SIMPLEX, 2.0, (255, 255, 255), 5)
+        panels.append(panel)
+    body = np.hstack(panels)
+
+    legend = np.zeros((110, body.shape[1], 3), dtype=np.uint8)
+    for i, (year, color) in enumerate(colors.items()):
+        x = 40 + i * 330
+        cv2.rectangle(legend, (x, 30), (x + 60, 85), color, -1)
+        cv2.putText(legend, str(year), (x + 75, 78), cv2.FONT_HERSHEY_SIMPLEX, 1.8, (255, 255, 255), 4)
+    x = 40 + len(colors) * 330
+    cv2.rectangle(legend, (x, 30), (x + 60, 85), (255, 255, 255), 4)
+    cv2.putText(legend, "hausse", (x + 75, 78), cv2.FONT_HERSHEY_SIMPLEX, 1.8, (255, 255, 255), 4)
+    return np.vstack([body, legend])
+
 def draw_bar_chart(rows, colors, path):
     """Histogramme de la surface où les druses ont disparu, par année."""
     width, height, margin = 1200, 600, 80
@@ -139,12 +178,18 @@ def date_disappearance(drusen_dir, masks_dir, aligned_dir, output_dir, scale=8, 
     appeared_map &= zone_full
 
     # Carte sur la photo la plus récente
-    latest = sorted(f for f in os.listdir(aligned_dir) if f.lower().endswith(('.png', '.jpg', '.jpeg')))[-1]
-    background = cv2.imread(os.path.join(aligned_dir, latest))
+    aligned_files = sorted(f for f in os.listdir(aligned_dir) if f.lower().endswith(('.png', '.jpg', '.jpeg')))
+    first = cv2.imread(os.path.join(aligned_dir, aligned_files[0]))
+    background = cv2.imread(os.path.join(aligned_dir, aligned_files[-1]))
     colors = year_colors(dates)
     title = f"Annee de disparition des druses ({dates[0]:%Y-%m-%d} -> {dates[-1]:%Y-%m-%d})"
     cv2.imwrite(os.path.join(output_dir, 'disappearance_map.jpg'),
                 draw_map(background, year_map, appeared_map, colors, title), [cv2.IMWRITE_JPEG_QUALITY, 92])
+
+    # Vérification : première photo, dernière photo et carte côte à côte
+    retina = cv2.imread(os.path.join(masks_dir, 'retina.png'), cv2.IMREAD_GRAYSCALE) > 0
+    check = draw_check_image(first, background, year_map, appeared_map, colors, retina, dates[0], dates[-1])
+    cv2.imwrite(os.path.join(output_dir, 'disappearance_check.jpg'), check, [cv2.IMWRITE_JPEG_QUALITY, 92])
     cv2.imwrite(os.path.join(output_dir, 'disappearance_year.png'),
                 np.where(year_map > 0, year_map - 2000, 0).astype(np.uint8))
 

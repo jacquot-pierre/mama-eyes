@@ -150,6 +150,8 @@ Les hausses significatives de densité (nouvelles druses) sont aussi repérées.
 Sorties dans le dossier choisi :
 - `disappearance_map.jpg` : photo la plus récente, chaque zone colorée selon l'année où ses druses
   ont disparu (zones en hausse entourées en blanc), avec légende ;
+- `disappearance_check.jpg` : image de vérification, avec côte à côte la première photo, la dernière
+  photo (contours des zones tracés sur les deux, couleur de l'année de disparition) et la carte ;
 - `disappearance_year.png` : année de disparition par pixel (valeur = année − 2000, 0 = aucune) ;
 - `disappearance_by_year.csv` et `disappearance_by_year.png` : surface où les druses ont disparu,
   par année, en % de la zone analysée.
