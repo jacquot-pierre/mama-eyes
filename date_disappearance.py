@@ -28,30 +28,34 @@ def load_density_series(density_dir, scale):
         maps.append(small.astype(np.float32) / DENSITY_SCALE)
     return dates, np.stack(maps), full_size
 
-def find_change_points(series, min_segment):
+def rolling_median(series, window):
+    """Médiane glissante le long des dates (axe 0), bords prolongés."""
+    half = window // 2
+    padded = np.concatenate([np.repeat(series[:1], half, axis=0), series, np.repeat(series[-1:], half, axis=0)])
+    return np.median(np.lib.stride_tricks.sliding_window_view(padded, window, axis=0), axis=-1)
+
+def analyze_series(series, edge_dates, smooth_window):
     """
-    Détection de rupture pour chaque point (colonne de `series`, de forme (dates, points)) :
-    on cherche la date qui sépare le mieux la courbe en un « avant » et un « après »
-    de niveaux constants (moindres carrés). Calcul vectorisé par sommes cumulées.
-    Retourne l'indice de la première date « après », les niveaux avant/après et
-    l'écart-type résiduel (bruit autour des deux niveaux).
+    Pour chaque point (colonne de `series`, de forme (dates, points)) :
+      - niveau de début et de fin : moyenne des `edge_dates` premières / dernières dates ;
+      - bruit à court terme : écart-type robuste des variations d'une date à l'autre ;
+      - date du changement : sur la courbe lissée, moment où elle franchit pour la dernière
+        fois la mi-chemin entre le niveau de début et celui de fin.
+    Comparer le début et la fin, plutôt que chercher une marche, fonctionne aussi bien pour
+    une chute brutale que pour une baisse progressive ou encore en cours en fin de série.
+    Retourne les niveaux de début et de fin, le bruit et l'indice de la date du changement.
     """
     count = series.shape[0]
-    cumsum = np.cumsum(series, axis=0)
-    total, total_sq = cumsum[-1], np.sum(series ** 2, axis=0)
-    best_sse = np.full(series.shape[1], np.inf, dtype=np.float32)
-    best_k = np.zeros(series.shape[1], dtype=np.int32)
-    for k in range(min_segment, count - min_segment + 1):
-        mean_before = cumsum[k - 1] / k
-        mean_after = (total - cumsum[k - 1]) / (count - k)
-        sse = total_sq - k * mean_before ** 2 - (count - k) * mean_after ** 2
-        better = sse < best_sse
-        best_sse[better], best_k[better] = sse[better], k
-    columns = np.arange(series.shape[1])
-    before = np.take_along_axis(cumsum, (best_k - 1)[None], axis=0)[0] / best_k
-    after = (total - np.take_along_axis(cumsum, (best_k - 1)[None], axis=0)[0]) / (count - best_k)
-    noise = np.sqrt(np.maximum(best_sse, 0) / (count - 2))
-    return best_k, before, after, noise
+    start = series[:edge_dates].mean(axis=0)
+    end = series[-edge_dates:].mean(axis=0)
+    noise = 1.4826 * np.median(np.abs(np.diff(series, axis=0)), axis=0) / np.sqrt(2)
+    smooth = rolling_median(series, smooth_window)
+    middle = (start + end) / 2
+    # Dernière date où la courbe est encore du côté du niveau de début ; le changement est constaté à la suivante
+    on_start_side = np.where(start >= end, smooth >= middle, smooth <= middle)
+    last_start_side = count - 1 - np.argmax(on_start_side[::-1], axis=0)
+    change = np.clip(last_start_side + 1, 0, count - 1)
+    return start, end, noise, change
 
 def year_colors(dates):
     """Une couleur par année (dégradé du bleu, plus ancien, au rouge, plus récent)."""
@@ -140,11 +144,11 @@ def draw_bar_chart(rows, colors, path):
     cv2.line(chart, (margin, height - margin), (width - margin, height - margin), (0, 0, 0), 2)
     cv2.imwrite(path, chart)
 
-def date_disappearance(drusen_dir, masks_dir, aligned_dir, output_dir, scale=8, min_segment=5,
-                       min_presence=0.010, min_drop=0.008, min_relative_drop=0.4, min_significance=3.0):
+def date_disappearance(drusen_dir, masks_dir, aligned_dir, output_dir, scale=8, edge_dates=8,
+                       smooth_window=5, min_drop=0.008, min_relative_drop=0.3, min_significance=3.0):
     os.makedirs(output_dir, exist_ok=True)
     dates, series, full_size = load_density_series(os.path.join(drusen_dir, 'density'), scale)
-    if len(dates) < 2 * min_segment:
+    if len(dates) < 3 * edge_dates:
         print(f"Pas assez de dates ({len(dates)}) pour dater des disparitions.")
         return
     small_size = (full_size[0] // scale, full_size[1] // scale)
@@ -153,19 +157,15 @@ def date_disappearance(drusen_dir, masks_dir, aligned_dir, output_dir, scale=8, 
     zone_small = cv2.erode(zone_small.astype(np.uint8), np.ones((3, 3), np.uint8)) > 0
 
     points = series[:, zone_small]
-    # Niveau « sans druse » : les valeurs les plus basses observées sur toute la série
-    floor = float(np.percentile(points, 1))
-    k, before, after, noise = find_change_points(points, min_segment)
-    drop = before - after
-    load_before = before - floor
-    significant = np.abs(drop) >= min_significance * np.maximum(noise, 1e-6)
-    disappeared = (significant & (load_before >= min_presence) & (drop >= min_drop)
-                   & (drop >= min_relative_drop * load_before))
-    appeared = significant & (-drop >= min_drop)
-    print(f"{len(dates)} dates, niveau sans druse {floor:.4f}, "
-          f"disparition sur {disappeared.mean():.0%} de la zone, hausse sur {appeared.mean():.0%}")
+    start, end, noise, k = analyze_series(points, edge_dates, smooth_window)
+    drop = start - end
+    # La différence de deux moyennes de `edge_dates` dates a un bruit de noise × √(2 / edge_dates)
+    significant = np.abs(drop) >= min_significance * np.maximum(noise, 1e-6) * np.sqrt(2 / edge_dates)
+    disappeared = significant & (drop >= min_drop) & (drop >= min_relative_drop * start)
+    appeared = significant & (-drop >= min_drop) & (-drop >= min_relative_drop * end)
+    print(f"{len(dates)} dates, disparition sur {disappeared.mean():.0%} de la zone, hausse sur {appeared.mean():.0%}")
 
-    # Année de la disparition : première date « après » la rupture
+    # Année de la disparition : date à laquelle le changement est constaté
     years = np.array([d.year for d in dates])
     year_small = np.zeros(small_size[::-1], dtype=np.int32)
     year_small[zone_small] = np.where(disappeared, years[k], 0)
@@ -214,16 +214,16 @@ if __name__ == '__main__':
     parser.add_argument('--masks_dir', type=str, required=True, help="Dossier des calques produits par build_masks.py.")
     parser.add_argument('--aligned_dir', type=str, required=True, help="Dossier des images alignées (fond de la carte).")
     parser.add_argument('--output_dir', type=str, required=True, help="Dossier où sauvegarder les résultats.")
-    parser.add_argument('--min_segment', type=int, default=5,
-                        help="Nombre minimal de dates avant et après une rupture.")
-    parser.add_argument('--min_presence', type=float, default=0.010,
-                        help="Densité minimale au-dessus du niveau sans druse, avant la rupture.")
-    parser.add_argument('--min_drop', type=float, default=0.008, help="Baisse minimale de densité.")
-    parser.add_argument('--min_relative_drop', type=float, default=0.4,
-                        help="Baisse minimale, en fraction de la charge en druses avant la rupture.")
+    parser.add_argument('--edge_dates', type=int, default=8,
+                        help="Nombre de dates moyennées pour le niveau de début et celui de fin.")
+    parser.add_argument('--smooth_window', type=int, default=5,
+                        help="Largeur (en dates) de la médiane glissante utilisée pour dater le changement.")
+    parser.add_argument('--min_drop', type=float, default=0.008, help="Baisse minimale de densité entre début et fin.")
+    parser.add_argument('--min_relative_drop', type=float, default=0.3,
+                        help="Baisse minimale, en fraction de la densité de début.")
     parser.add_argument('--min_significance', type=float, default=3.0,
-                        help="La baisse doit dépasser ce multiple du bruit autour des deux niveaux.")
+                        help="La baisse doit dépasser ce multiple du bruit de mesure.")
     args = parser.parse_args()
     date_disappearance(args.drusen_dir, args.masks_dir, args.aligned_dir, args.output_dir,
-                       min_segment=args.min_segment, min_presence=args.min_presence, min_drop=args.min_drop,
+                       edge_dates=args.edge_dates, smooth_window=args.smooth_window, min_drop=args.min_drop,
                        min_relative_drop=args.min_relative_drop, min_significance=args.min_significance)

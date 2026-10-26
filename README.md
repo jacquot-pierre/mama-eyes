@@ -134,18 +134,20 @@ Résultats sur la série actuelle, entre 2018 et 2025 :
 
 # Datation des disparitions (`date_disappearance.py`)
 Pour chaque point de la zone analysée, on suit la densité de druses fines (produite par
-`detect_drusen.py`) sur toutes les dates, et on y cherche une **rupture** : la date qui sépare le
-mieux la courbe en un niveau « avant » et un niveau « après » (moindres carrés, calcul à 1/8 de la
-résolution, la densité étant déjà lissée sur ~40 px). Une disparition est retenue si :
-- il y avait des druses avant : densité au moins `--min_presence` (0,010) au-dessus du niveau
-  « sans druse », estimé automatiquement comme les valeurs les plus basses de la série ;
-- la baisse est nette : au moins `--min_drop` (0,008) et au moins `--min_relative_drop` (40 %)
-  de la charge en druses d'avant ;
-- la baisse dépasse `--min_significance` (3) fois le bruit de la courbe autour des deux niveaux.
+`detect_drusen.py`) sur toutes les dates (calcul à 1/8 de la résolution, la densité étant déjà
+lissée sur ~40 px), et on compare le **niveau du début** et le **niveau de la fin** de la série
+(moyennes des `--edge_dates` premières et dernières dates, 8 par défaut). Une disparition est retenue si :
+- la baisse est nette : au moins `--min_drop` (0,008) et au moins `--min_relative_drop` (30 %)
+  de la densité du début ;
+- la baisse dépasse `--min_significance` (3) fois le bruit de mesure (estimé à partir des variations
+  d'une date à l'autre).
 
-Il faut au moins `--min_segment` (5) dates de part et d'autre d'une rupture : les disparitions
-survenues pendant les tout premiers ou les tout derniers mois de la série ne peuvent pas être datées.
-Les hausses significatives de densité (nouvelles druses) sont aussi repérées.
+La **date de disparition** est celle où la courbe, lissée par une médiane glissante sur
+`--smooth_window` dates (5), passe pour la dernière fois sous la mi-chemin entre le niveau du début
+et celui de la fin. Cette approche convient aussi bien à une chute brutale qu'à une baisse
+progressive sur plusieurs années ou encore en cours en fin de série (une première version, qui
+cherchait une « marche » unique dans la courbe, manquait ces deux derniers cas). Les hausses
+significatives de densité (nouvelles druses) sont repérées de la même façon.
 
 Sorties dans le dossier choisi :
 - `disappearance_map.jpg` : photo la plus récente, chaque zone colorée selon l'année où ses druses
@@ -156,10 +158,10 @@ Sorties dans le dossier choisi :
 - `disappearance_by_year.csv` et `disappearance_by_year.png` : surface où les druses ont disparu,
   par année, en % de la zone analysée.
 
-Résultats sur la série actuelle : disparition sur 27 % de la zone analysée pour l'œil droit (pic en
-2021) et 16 % pour l'œil gauche (pic en 2023), aucune hausse significative. Les zones disparues sont
-continues et progressent vers l'extérieur au fil des années. Sur des points témoins, la date trouvée
-correspond à la disparition visible sur les photos.
+Résultats sur la série actuelle : disparition sur 34 % de la zone analysée pour l'œil droit (pic en
+2021) et 25 % pour l'œil gauche (pics en 2021 et 2023), aucune hausse significative. Les zones
+disparues sont continues et progressent vers l'extérieur au fil des années. Sur des points témoins,
+la date trouvée correspond à la disparition visible sur les photos.
 
 
 # Alignement et découpage (`align_images.py`)
