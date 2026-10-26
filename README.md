@@ -47,6 +47,10 @@ poetry run python create_video.py --input_dir ./drusen/oeil_droit/overlays --out
 
 poetry run python create_video.py --input_dir ./drusen/oeil_droit/density_overlays --output_file ./densite_oeil_droit.mp4
 
+poetry run python date_disappearance.py --drusen_dir ./drusen/oeil_droit --masks_dir ./masks/oeil_droit --aligned_dir ./aligned_images/oeil_droit --output_dir ./disappearance/oeil_droit
+
+poetry run python date_disappearance.py --drusen_dir ./drusen/oeil_gauche --masks_dir ./masks/oeil_gauche --aligned_dir ./aligned_images/oeil_gauche --output_dir ./disappearance/oeil_gauche
+
 poetry run python analyze_drusen.py --input_dir ./aligned_images/oeil_droit --output_dir ./analysis_results/oeil_droit --threshold 25
 
 poetry run python analyze_drusen.py --input_dir ./aligned_images/oeil_gauche --output_dir ./analysis_results/oeil_gauche --threshold 25
@@ -126,6 +130,34 @@ Résultats sur la série actuelle, entre 2018 et 2025 :
 - surface de druses : de 35 à 24 % de la zone analysée (œil droit) et de 38 à 30 % (œil gauche) ;
 - environ 2 % des pixels changent d'état d'une date à l'autre pour le détecteur principal ; les
   druses disparues forment des zones continues, là où l'atrophie s'est étendue.
+
+
+# Datation des disparitions (`date_disappearance.py`)
+Pour chaque point de la zone analysée, on suit la densité de druses fines (produite par
+`detect_drusen.py`) sur toutes les dates, et on y cherche une **rupture** : la date qui sépare le
+mieux la courbe en un niveau « avant » et un niveau « après » (moindres carrés, calcul à 1/8 de la
+résolution, la densité étant déjà lissée sur ~40 px). Une disparition est retenue si :
+- il y avait des druses avant : densité au moins `--min_presence` (0,010) au-dessus du niveau
+  « sans druse », estimé automatiquement comme les valeurs les plus basses de la série ;
+- la baisse est nette : au moins `--min_drop` (0,008) et au moins `--min_relative_drop` (40 %)
+  de la charge en druses d'avant ;
+- la baisse dépasse `--min_significance` (3) fois le bruit de la courbe autour des deux niveaux.
+
+Il faut au moins `--min_segment` (5) dates de part et d'autre d'une rupture : les disparitions
+survenues pendant les tout premiers ou les tout derniers mois de la série ne peuvent pas être datées.
+Les hausses significatives de densité (nouvelles druses) sont aussi repérées.
+
+Sorties dans le dossier choisi :
+- `disappearance_map.jpg` : photo la plus récente, chaque zone colorée selon l'année où ses druses
+  ont disparu (zones en hausse entourées en blanc), avec légende ;
+- `disappearance_year.png` : année de disparition par pixel (valeur = année − 2000, 0 = aucune) ;
+- `disappearance_by_year.csv` et `disappearance_by_year.png` : surface où les druses ont disparu,
+  par année, en % de la zone analysée.
+
+Résultats sur la série actuelle : disparition sur 27 % de la zone analysée pour l'œil droit (pic en
+2021) et 16 % pour l'œil gauche (pic en 2023), aucune hausse significative. Les zones disparues sont
+continues et progressent vers l'extérieur au fil des années. Sur des points témoins, la date trouvée
+correspond à la disparition visible sur les photos.
 
 
 # Alignement et découpage (`align_images.py`)
